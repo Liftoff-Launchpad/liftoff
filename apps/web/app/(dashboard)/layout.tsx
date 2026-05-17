@@ -2,9 +2,9 @@
 
 import { useEffect } from 'react';
 import { useRouter } from 'next/navigation';
-import { Header } from '@/components/layout/header';
 import { Sidebar } from '@/components/layout/sidebar';
 import { Spinner } from '@/components/ui/spinner';
+import { DoAccountOnboardingModal } from '@/components/onboarding/do-account-modal';
 import { useAuthRehydration } from '@/hooks/use-auth-rehydration';
 import { useAuthStore } from '@/store/auth.store';
 
@@ -24,29 +24,21 @@ export default function DashboardLayout({
     }
   }, [isAuthenticated, isLoading, router]);
 
-  if (isLoading) {
+  if (isLoading || !isAuthenticated) {
     return (
-      <main className="flex min-h-screen items-center justify-center">
-        <Spinner className="h-8 w-8" />
-      </main>
-    );
-  }
-
-  if (!isAuthenticated) {
-    return (
-      <main className="flex min-h-screen items-center justify-center">
+      <main className="flex h-screen items-center justify-center bg-background">
         <Spinner className="h-8 w-8" />
       </main>
     );
   }
 
   return (
-    <div className="grid min-h-screen grid-cols-1 md:grid-cols-[220px_1fr]">
+    <div className="flex h-screen overflow-hidden bg-background">
       <Sidebar />
-      <div className="flex flex-col">
-        <Header />
-        <main className="flex-1 p-6">{children}</main>
-      </div>
+      <main className="relative flex-1 min-w-0 overflow-y-auto">
+        {children}
+      </main>
+      <DoAccountOnboardingModal />
     </div>
   );
 }

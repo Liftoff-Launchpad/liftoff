@@ -9,6 +9,7 @@ COPY pnpm-workspace.yaml package.json pnpm-lock.yaml ./
 COPY packages/config/package.json packages/config/
 COPY packages/shared/package.json packages/shared/
 COPY apps/web/package.json apps/web/
+COPY packages/pulumi-components/package.json packages/pulumi-components/
 COPY apps/api/package.json apps/api/
 RUN pnpm install --frozen-lockfile
 

@@ -24,6 +24,7 @@ import { UploadModule } from './upload/upload.module';
 import { UsersModule } from './users/users.module';
 import { WebhooksModule } from './webhooks/webhooks.module';
 import { PipelineModule } from './pipeline/pipeline.module';
+import { CanvasModule } from './canvas/canvas.module';
 
 /**
  * Root application module.
@@ -99,6 +100,7 @@ import { PipelineModule } from './pipeline/pipeline.module';
     WebhooksModule,
     UploadModule,
     PipelineModule,
+    CanvasModule,
   ],
   controllers: [AppController],
   providers: [

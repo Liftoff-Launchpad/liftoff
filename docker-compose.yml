@@ -1,5 +1,3 @@
-version: '3.9'
-
 services:
   postgres:
     image: postgres:15-alpine
@@ -43,25 +41,11 @@ services:
       - ./packages/config:/app/packages/config
       - api_node_modules:/app/node_modules
       - api_apps_node_modules:/app/apps/api/node_modules
+    env_file:
+      - ./apps/api/.env
     environment:
-      - NODE_ENV=development
-      - PORT=4000
       - DATABASE_URL=postgresql://liftoff:liftoff@postgres:5432/liftoff
       - REDIS_URL=redis://redis:6379
-      - JWT_SECRET=a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2
-      - JWT_REFRESH_SECRET=a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2
-      - GITHUB_CLIENT_ID=github_client_id
-      - GITHUB_CLIENT_SECRET=github_client_secret
-      - GITHUB_CALLBACK_URL=http://localhost:4000/api/auth/github/callback
-      - GITHUB_WEBHOOK_SECRET=a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0
-      - DO_API_TOKEN=${DO_API_TOKEN:-}
-      - DO_SPACES_ACCESS_KEY=${DO_SPACES_ACCESS_KEY:-}
-      - DO_SPACES_SECRET_KEY=${DO_SPACES_SECRET_KEY:-}
-      - DO_SPACES_BUCKET=liftoff-pulumi-state
-      - DO_SPACES_ENDPOINT=https://nyc3.digitaloceanspaces.com
-      - DO_SPACES_REGION=nyc3
-      - PULUMI_PASSPHRASE=liftoff_dev_passphrase
-      - ENCRYPTION_KEY=a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2
     depends_on:
       postgres:
         condition: service_healthy

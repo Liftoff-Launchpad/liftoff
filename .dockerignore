@@ -75,7 +75,7 @@ test-results
 .turbo
 
 # Prisma
-apps/api/prisma/migrations
+# Keep migrations available for prisma migrate deploy
 
 # Local services data
 postgres_data

@@ -92,7 +92,10 @@ function PipelineNodeComponent({ id, data, type, selected }: NodeProps) {
         <span className="text-xs font-semibold text-foreground flex-1 truncate">{label}</span>
         <button
           onClick={handleDelete}
-          className="opacity-0 group-hover:opacity-100 hover:opacity-100 text-muted-foreground hover:text-destructive transition-opacity text-xs px-1"
+          className={cn(
+            'text-muted-foreground hover:text-destructive transition-opacity text-xs px-1',
+            selected ? 'opacity-100' : 'opacity-0 group-hover:opacity-100',
+          )}
           title="Remove node"
         >
           ✕

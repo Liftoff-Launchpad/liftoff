@@ -1,7 +1,7 @@
 'use client';
 
-import { useParams, usePathname } from 'next/navigation';
 import Link from 'next/link';
+import { useParams, usePathname } from 'next/navigation';
 import { cn } from '@/lib/utils';
 
 interface NavTab {
@@ -32,7 +32,6 @@ export default function EnvironmentLayout({ children }: { children: React.ReactN
 
   const tabs: NavTab[] = [
     { label: 'Overview', href: baseUrl, testId: 'tab-overview' },
-    { label: 'Pipeline', href: `${baseUrl}/pipeline`, testId: 'tab-pipeline' },
     { label: 'History', href: `${baseUrl}/history`, testId: 'tab-history' },
     { label: 'Logs', href: `${baseUrl}/logs`, testId: 'tab-logs' },
     { label: 'Metrics', href: `${baseUrl}/metrics`, testId: 'tab-metrics' },
@@ -48,7 +47,7 @@ export default function EnvironmentLayout({ children }: { children: React.ReactN
   };
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 p-6">
       <div className="border-b border-border">
         <nav className="flex gap-1">
           {tabs.map((tab) => {

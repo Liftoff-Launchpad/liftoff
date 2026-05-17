@@ -8,8 +8,10 @@ WORKDIR /app
 COPY pnpm-workspace.yaml package.json pnpm-lock.yaml ./
 COPY packages/config/package.json packages/config/
 COPY packages/shared/package.json packages/shared/
+COPY packages/pulumi-components/package.json packages/pulumi-components/
 COPY apps/api/package.json apps/api/
 RUN pnpm install --frozen-lockfile
+RUN apk add --no-cache openssl
 
 # ------------------------------------------------------------------------------
 # Development Stage
@@ -20,7 +22,7 @@ COPY apps/api/ apps/api/
 
 WORKDIR /app/apps/api
 EXPOSE 4000
-CMD ["pnpm", "dev"]
+CMD ["sh", "-c", "npx prisma generate && npx prisma migrate deploy && pnpm dev"]
 
 # ------------------------------------------------------------------------------
 # Builder Stage
@@ -28,6 +30,7 @@ CMD ["pnpm", "dev"]
 FROM base AS builder
 COPY packages/ packages/
 COPY apps/api/ apps/api/
+RUN cd apps/api && npx prisma generate
 RUN pnpm --filter shared build
 RUN pnpm --filter api build
 

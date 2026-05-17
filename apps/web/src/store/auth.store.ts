@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { persist } from 'zustand/middleware';
 import type { UserPublicDto } from '@liftoff/shared';
 
 interface AuthState {
@@ -12,29 +13,41 @@ interface AuthState {
   setLoading: (isLoading: boolean) => void;
 }
 
-export const useAuthStore = create<AuthState>((set) => ({
-  user: null,
-  accessToken: null,
-  isAuthenticated: false,
-  isLoading: true,
-  setAuth: (user, accessToken) =>
-    set({
-      user,
-      accessToken,
-      isAuthenticated: true,
-      isLoading: false,
-    }),
-  clearAuth: () =>
-    set({
+export const useAuthStore = create<AuthState>()(
+  persist(
+    (set) => ({
       user: null,
       accessToken: null,
       isAuthenticated: false,
-      isLoading: false,
+      isLoading: true,
+      setAuth: (user, accessToken) =>
+        set({
+          user,
+          accessToken,
+          isAuthenticated: true,
+          isLoading: false,
+        }),
+      clearAuth: () =>
+        set({
+          user: null,
+          accessToken: null,
+          isAuthenticated: false,
+          isLoading: false,
+        }),
+      setToken: (accessToken) =>
+        set((state) => ({
+          accessToken,
+          isAuthenticated: state.user !== null && accessToken.length > 0,
+        })),
+      setLoading: (isLoading) => set({ isLoading }),
     }),
-  setToken: (accessToken) =>
-    set((state) => ({
-      accessToken,
-      isAuthenticated: state.user !== null && accessToken.length > 0,
-    })),
-  setLoading: (isLoading) => set({ isLoading }),
-}));
+    {
+      name: 'auth-store',
+      partialize: (state) => ({
+        user: state.user,
+        accessToken: state.accessToken,
+        isAuthenticated: state.isAuthenticated,
+      }),
+    },
+  ),
+);
