@@ -18,7 +18,6 @@ import {
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import { useQueryClient } from '@tanstack/react-query';
-import { FileText, Gauge, Layers3, RotateCcw, Settings, ZoomIn, ZoomOut } from 'lucide-react';
 
 import { CanvasEmptyState } from './canvas-empty-state';
 import { ServiceNode } from './service-node';
@@ -291,41 +290,12 @@ export function ProjectCanvas({ projectId }: ProjectCanvasProps) {
         onActivityToggle={() => setActivityOpen((open) => !open)}
       />
 
-      <div className="absolute bottom-0 left-0 top-16 z-10 flex w-16 flex-col items-center border-r border-border bg-background/84 py-4 backdrop-blur-xl">
-        <div className="flex flex-col gap-2">
-          <button className="flex h-11 w-11 items-center justify-center rounded-lg bg-secondary text-foreground" type="button" title="Canvas">
-            <Layers3 className="h-4 w-4" />
-          </button>
-          <button className="flex h-11 w-11 items-center justify-center rounded-lg text-muted-foreground hover:bg-secondary hover:text-foreground" type="button" title="Metrics">
-            <Gauge className="h-4 w-4" />
-          </button>
-          <button className="flex h-11 w-11 items-center justify-center rounded-lg text-muted-foreground hover:bg-secondary hover:text-foreground" type="button" title="Logs">
-            <FileText className="h-4 w-4" />
-          </button>
-          <button className="flex h-11 w-11 items-center justify-center rounded-lg text-muted-foreground hover:bg-secondary hover:text-foreground" type="button" title="Settings">
-            <Settings className="h-4 w-4" />
-          </button>
-        </div>
-
-        <div className="mt-auto flex flex-col gap-2">
-          <button className="liftoff-button flex h-10 w-10 items-center justify-center rounded-lg" type="button" title="Zoom in">
-            <ZoomIn className="h-4 w-4" />
-          </button>
-          <button className="liftoff-button flex h-10 w-10 items-center justify-center rounded-lg" type="button" title="Zoom out">
-            <ZoomOut className="h-4 w-4" />
-          </button>
-          <button className="liftoff-button flex h-10 w-10 items-center justify-center rounded-lg" type="button" title="Reset view">
-            <RotateCcw className="h-4 w-4" />
-          </button>
-        </div>
-      </div>
-
       {!hasNodes ? (
-        <div className="absolute inset-0 pl-16 pt-16">
+        <div className="absolute inset-0 pt-16">
           <CanvasEmptyState projectId={projectId} />
         </div>
       ) : viewMode === 'dev' ? (
-        <div className="absolute inset-0 left-16 top-16 overflow-hidden">
+        <div className="absolute inset-0 top-16 overflow-hidden">
           <DevModeView projectId={projectId} environmentId={activeEnvironmentId} />
         </div>
       ) : (
@@ -340,8 +310,9 @@ export function ProjectCanvas({ projectId }: ProjectCanvasProps) {
           onPaneContextMenu={onPaneContextMenu}
           nodeTypes={nodeTypes}
           fitView
+          fitViewOptions={{ maxZoom: 1 }}
           className="absolute liftoff-canvas"
-          style={{ inset: '64px 0 0 64px', height: 'calc(100% - 64px)', width: 'calc(100% - 64px)' }}
+          style={{ inset: '64px 0 0 0', height: 'calc(100% - 64px)', width: '100%' }}
         >
           <Background
             variant={BackgroundVariant.Dots}
@@ -349,7 +320,11 @@ export function ProjectCanvas({ projectId }: ProjectCanvasProps) {
             size={1}
             color="hsl(var(--muted-foreground) / 0.16)"
           />
-          <Controls className="!bg-card !border-border !rounded-lg !shadow-lg [&>button]:!bg-card [&>button]:!border-border [&>button]:!text-foreground [&>button:hover]:!bg-accent" />
+          <Controls
+            position="bottom-left"
+            showInteractive={false}
+            className="!m-4 !overflow-hidden !rounded-lg !border !border-border/80 !bg-card/90 !shadow-[0_18px_60px_hsl(252_30%_2%/0.35)] [&>button]:!h-10 [&>button]:!w-10 [&>button]:!border-border/80 [&>button]:!bg-card/95 [&>button]:!text-muted-foreground [&>button:hover]:!bg-secondary [&>button:hover]:!text-foreground"
+          />
         </ReactFlow>
       )}
 
@@ -377,6 +352,10 @@ export function ProjectCanvas({ projectId }: ProjectCanvasProps) {
                 onClose={() => setSelectedNode(null)}
                 nodeLabel={selectedNodeData?.data.label}
                 nodeId={selectedNode?.id}
+                status={String(selectedNode?.data?.status ?? 'PENDING')}
+                repoName={String(selectedNode?.data?.repoName ?? selectedNodeData?.data.label ?? '')}
+                region={String(selectedNode?.data?.region ?? selectedNodeData?.data?.region ?? '')}
+                replicas={Number(selectedNode?.data?.replicas ?? 1)}
               >
                 {selectedNode && (
                   <>
