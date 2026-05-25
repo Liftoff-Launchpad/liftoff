@@ -40,11 +40,10 @@ liftoff/
 │   ├── shared/                # Shared TypeScript types, Zod schemas, constants
 │   └── config/                # Shared ESLint + TypeScript configs
 ├── infra/                     # Liftoff platform's own DO infrastructure (Pulumi)
-├── ci/                        # GitHub Actions workflow templates
 ├── docs/                      # Architecture, environment, setup guides
 ├── .github/
 │   └── copilot-instructions.md    # AI agent instructions — READ THIS FIRST
-├── docker-compose.yml         # Local dev: PostgreSQL + Redis
+├── docker-compose.yml         # Local dev: PostgreSQL + Redis + ngrok + API + Web
 ├── turbo.json
 ├── pnpm-workspace.yaml
 └── package.json
@@ -90,7 +89,7 @@ git clone https://github.com/YOUR_ORG/liftoff.git && cd liftoff
 # 1.5 Export ngrok token (required for reserved domain tunnel)
 export NGROK_AUTHTOKEN=your_ngrok_authtoken
 
-# 2. Build and start all services (PostgreSQL, Redis, API, Web)
+# 2. Build and start all services (PostgreSQL, Redis, ngrok, API, Web)
 docker compose build
 docker compose up -d
 
@@ -100,12 +99,15 @@ docker compose exec api pnpm db:migrate
 # 4. Access the application
 # Web UI:  http://localhost:3000
 # API:     http://localhost:4000
+# ngrok inspector: http://localhost:4040
+# Webhook base URL: https://aniya-preservable-harriett.ngrok-free.dev
 # Postgres: localhost:5432 (user: liftoff, password: liftoff, db: liftoff)
 # Redis:   localhost:6379
 
 # 5. View logs
 docker compose logs -f api
 docker compose logs -f web
+docker compose logs -f ngrok
 
 # 6. Stop everything
 docker compose down
@@ -164,7 +166,6 @@ doctl registry login          # Authenticate Docker to DOCR
 |----------|---------|
 | [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) | System design, DO-only architecture, data flow |
 | [`docs/ENVIRONMENT.md`](./docs/ENVIRONMENT.md) | All environment variables explained |
-| [`docs/DIGITALOCEAN_SETUP.md`](./docs/DIGITALOCEAN_SETUP.md) | One-time DO infrastructure setup for the platform |
 | [`docs/DO_ACCOUNT_SETUP.md`](./docs/DO_ACCOUNT_SETUP.md) | How end users connect their DO account to Liftoff |
 | [`docs/LIFTOFF_YML.md`](./docs/LIFTOFF_YML.md) | `liftoff.yml` config schema reference |
 | [`.github/copilot-instructions.md`](./.github/copilot-instructions.md) | AI agent coding instructions |
