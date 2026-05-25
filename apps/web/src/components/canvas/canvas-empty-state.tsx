@@ -1,6 +1,6 @@
 'use client';
 
-import { Plus, Rocket, Search } from 'lucide-react';
+import { Box, ChevronRight, Database, Github, Plus, Rocket, Search, Sparkles, Terminal, UploadCloud } from 'lucide-react';
 import { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -168,7 +168,7 @@ export function CanvasEmptyState({ projectId, onSetupComplete }: CanvasEmptyStat
 
   if (isSetupInProgress) {
     return (
-      <div className="flex h-full w-full items-center justify-center bg-background">
+      <div className="liftoff-canvas flex h-full w-full items-center justify-center">
         <div className="flex flex-col items-center gap-4 text-center">
           <div className="relative">
             <Spinner className="h-12 w-12" />
@@ -185,32 +185,48 @@ export function CanvasEmptyState({ projectId, onSetupComplete }: CanvasEmptyStat
 
   return (
     <>
-      <div className="flex h-full w-full items-center justify-center bg-background">
-        <div className="w-full max-w-md space-y-6 rounded-xl border border-border bg-card p-8 shadow-lg">
-          <div className="text-center">
-            <Rocket className="mx-auto mb-3 h-10 w-10 text-primary" />
-            <h2 className="text-xl font-semibold">Deploy your GitHub repo</h2>
-            <p className="mt-1 text-sm text-muted-foreground">
-              Select a repository and we&apos;ll auto-detect your stack
-            </p>
-          </div>
-
-          <div className="space-y-2">
-            <label className="text-sm font-medium">Repository</label>
+      <div className="liftoff-canvas relative flex h-full w-full items-center justify-center overflow-hidden">
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 h-44 bg-[linear-gradient(180deg,transparent,hsl(var(--primary)/0.08))]" />
+        <div className="liftoff-panel w-full max-w-lg overflow-hidden rounded-lg">
+          <div className="border-b border-border p-3">
             <div className="relative">
-              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <Sparkles className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-primary" />
               <Input
-                placeholder="Search your repositories…"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="pl-9"
+                placeholder="What would you like to create?"
+                className="h-12 border-primary/50 bg-background/70 pl-10"
               />
             </div>
           </div>
 
-          <div className="space-y-2">
-            <label className="text-sm font-medium">Recent repos</label>
-            <div className="max-h-48 space-y-1 overflow-y-auto rounded-lg border border-border">
+          <div className="space-y-1 border-b border-border p-3">
+            <button
+              type="button"
+              className="flex w-full items-center gap-3 rounded-md bg-secondary px-3 py-3 text-left text-sm font-medium"
+            >
+              <Sparkles className="h-4 w-4 text-foreground" />
+              Create to-do list function with a database
+            </button>
+            <button
+              type="button"
+              className="flex w-full items-center gap-3 rounded-md px-3 py-3 text-left text-sm text-muted-foreground hover:bg-secondary/70"
+            >
+              <Sparkles className="h-4 w-4" />
+              Deploy Redis, Postgres, and a bucket
+            </button>
+          </div>
+
+          <div className="space-y-3 p-3">
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                placeholder="Search GitHub repositories"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="h-10 border-border bg-background/60 pl-9"
+              />
+            </div>
+
+            <div className="max-h-44 space-y-1 overflow-y-auto rounded-lg border border-border bg-background/30">
               {reposLoading ? (
                 <div className="flex items-center justify-center py-8">
                   <Spinner className="h-5 w-5" />
@@ -222,11 +238,14 @@ export function CanvasEmptyState({ projectId, onSetupComplete }: CanvasEmptyStat
                     type="button"
                     onClick={() => setSelectedRepo(repo)}
                     className={cn(
-                      'flex w-full items-center justify-between px-3 py-2 text-left text-sm transition-colors hover:bg-accent',
+                      'flex w-full items-center justify-between px-3 py-2.5 text-left text-sm transition-colors hover:bg-accent',
                       selectedRepo?.id === repo.id && 'bg-accent',
                     )}
                   >
-                    <span className="truncate font-medium">{repo.fullName}</span>
+                    <span className="flex min-w-0 items-center gap-2">
+                      <Github className="h-4 w-4 shrink-0 text-muted-foreground" />
+                      <span className="truncate font-medium">{repo.fullName}</span>
+                    </span>
                     <span className="ml-2 shrink-0 text-xs text-muted-foreground">{repo.defaultBranch}</span>
                   </button>
                 ))
@@ -236,17 +255,38 @@ export function CanvasEmptyState({ projectId, onSetupComplete }: CanvasEmptyStat
                 </p>
               )}
             </div>
-          </div>
 
-          <Button
-            className="w-full"
-            size="lg"
-            disabled={!selectedRepo}
-            onClick={handleAutoDeployClick}
-          >
-            <Rocket className="mr-2 h-4 w-4" />
-            Auto-Deploy
-          </Button>
+            <div className="space-y-1 pt-1">
+              {[
+                { label: 'Database', icon: Database },
+                { label: 'Template', icon: Box },
+                { label: 'Docker Image', icon: UploadCloud },
+                { label: 'Function', icon: Terminal },
+                { label: 'Bucket', icon: Box },
+                { label: 'Empty Project', icon: Rocket },
+              ].map((item) => {
+                const Icon = item.icon;
+                return (
+                  <button
+                    key={item.label}
+                    type="button"
+                    className="flex w-full items-center justify-between rounded-md px-3 py-2.5 text-left text-sm text-muted-foreground transition-colors hover:bg-secondary/70 hover:text-foreground"
+                  >
+                    <span className="flex items-center gap-3">
+                      <Icon className="h-4 w-4" />
+                      {item.label}
+                    </span>
+                    <ChevronRight className="h-4 w-4" />
+                  </button>
+                );
+              })}
+            </div>
+
+            <Button className="w-full" size="lg" disabled={!selectedRepo} onClick={handleAutoDeployClick}>
+              <Rocket className="mr-2 h-4 w-4" />
+              Auto-deploy selected repo
+            </Button>
+          </div>
         </div>
       </div>
 

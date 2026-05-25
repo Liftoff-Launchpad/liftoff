@@ -1,76 +1,79 @@
 'use client';
 
+import { Activity, Bell, FileText, Gauge, Layers3, MessageSquare, Rocket, Settings } from 'lucide-react';
 import Link from 'next/link';
 import { useParams, usePathname } from 'next/navigation';
 import { cn } from '@/lib/utils';
 
-interface NavTab {
-  label: string;
-  href: string;
-  testId?: string;
-}
-
 function resolveRouteParam(param: string | string[] | undefined): string {
-  if (Array.isArray(param)) {
-    return param[0] ?? '';
-  }
-
+  if (Array.isArray(param)) return param[0] ?? '';
   return param ?? '';
 }
 
-/**
- * Environment layout with persistent tab navigation.
- */
 export default function EnvironmentLayout({ children }: { children: React.ReactNode }): JSX.Element {
   const params = useParams();
   const pathname = usePathname();
-
   const projectId = resolveRouteParam(params.id);
   const environmentId = resolveRouteParam(params.envId);
-
   const baseUrl = `/projects/${projectId}/environments/${environmentId}`;
 
-  const tabs: NavTab[] = [
-    { label: 'Overview', href: baseUrl, testId: 'tab-overview' },
-    { label: 'History', href: `${baseUrl}/history`, testId: 'tab-history' },
-    { label: 'Logs', href: `${baseUrl}/logs`, testId: 'tab-logs' },
-    { label: 'Metrics', href: `${baseUrl}/metrics`, testId: 'tab-metrics' },
-    { label: 'Settings', href: `${baseUrl}/settings`, testId: 'tab-settings' },
+  const nav = [
+    { label: 'Canvas', href: `/projects/${projectId}/canvas`, icon: Layers3 },
+    { label: 'Metrics', href: `${baseUrl}/metrics`, icon: Gauge },
+    { label: 'Logs', href: `${baseUrl}/logs`, icon: FileText },
+    { label: 'Settings', href: `${baseUrl}/settings`, icon: Settings },
   ];
 
-  const isTabActive = (tabHref: string): boolean => {
-    if (tabHref === baseUrl) {
-      // Deployments tab is active when pathname is exactly the base or ends with [envId]
-      return pathname === baseUrl || pathname.endsWith(`/environments/${environmentId}`);
-    }
-    return pathname === tabHref || pathname.startsWith(tabHref);
-  };
-
   return (
-    <div className="space-y-6 p-6">
-      <div className="border-b border-border">
-        <nav className="flex gap-1">
-          {tabs.map((tab) => {
-            const active = isTabActive(tab.href);
+    <div className="absolute inset-0 overflow-hidden bg-background">
+      <header className="absolute inset-x-0 top-0 z-20 flex h-16 items-center justify-between border-b border-border bg-background/90 px-5 backdrop-blur-xl">
+        <div className="flex items-center gap-4">
+          <Link href="/projects" className="flex h-8 w-8 items-center justify-center rounded-full bg-foreground text-background">
+            <Rocket className="h-4 w-4" />
+            <span className="sr-only">Projects</span>
+          </Link>
+          <div className="h-7 w-px bg-border" />
+          <div className="flex items-center gap-2 text-sm">
+            <Link href={`/projects/${projectId}/canvas`} className="font-semibold">Project</Link>
+            <span className="text-muted-foreground">/</span>
+            <span className="font-medium">production</span>
+          </div>
+        </div>
+        <div className="flex items-center gap-3 text-muted-foreground">
+          <Activity className="h-4 w-4" />
+          <Bell className="h-4 w-4" />
+          <div className="h-7 w-px bg-border" />
+          <span className="inline-flex items-center gap-2 text-sm">
+            <MessageSquare className="h-4 w-4" />
+            Agent
+          </span>
+        </div>
+      </header>
+
+      <aside className="absolute bottom-0 left-0 top-16 z-10 flex w-16 flex-col items-center border-r border-border bg-background/84 py-4 backdrop-blur-xl">
+        <nav className="flex flex-col gap-2">
+          {nav.map((item) => {
+            const Icon = item.icon;
+            const active = pathname === item.href || pathname.startsWith(item.href);
             return (
               <Link
-                key={tab.href}
-                href={tab.href}
-                data-testid={tab.testId}
+                key={item.href}
+                href={item.href}
+                title={item.label}
                 className={cn(
-                  'px-4 py-2 text-sm font-medium transition-all duration-200 border-b-2 -mb-px',
-                  active
-                    ? 'border-blue-500 text-blue-600 font-semibold'
-                    : 'border-transparent text-muted-foreground hover:text-foreground hover:border-border',
+                  'flex h-11 w-11 items-center justify-center rounded-lg transition-colors',
+                  active ? 'bg-secondary text-foreground' : 'text-muted-foreground hover:bg-secondary hover:text-foreground',
                 )}
               >
-                {tab.label}
+                <Icon className="h-4 w-4" />
+                <span className="sr-only">{item.label}</span>
               </Link>
             );
           })}
         </nav>
-      </div>
-      <div>{children}</div>
+      </aside>
+
+      <main className="absolute inset-0 left-16 top-16 overflow-auto p-4">{children}</main>
     </div>
   );
 }
