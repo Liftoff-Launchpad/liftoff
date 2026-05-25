@@ -37,6 +37,7 @@ services:
       - '4000:4000'
     volumes:
       - ./apps/api/src:/app/apps/api/src
+      - ./apps/api/prisma:/app/apps/api/prisma
       - ./packages/shared/src:/app/packages/shared/src
       - ./packages/config:/app/packages/config
       - api_node_modules:/app/node_modules

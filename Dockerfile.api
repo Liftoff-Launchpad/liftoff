@@ -22,7 +22,7 @@ COPY apps/api/ apps/api/
 
 WORKDIR /app/apps/api
 EXPOSE 4000
-CMD ["sh", "-c", "npx prisma generate && npx prisma migrate deploy && pnpm dev"]
+CMD ["sh", "-c", "pnpm --filter shared build && npx prisma generate && npx prisma migrate deploy && pnpm dev"]
 
 # ------------------------------------------------------------------------------
 # Builder Stage
