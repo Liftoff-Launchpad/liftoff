@@ -1,5 +1,5 @@
 import { DeploymentStatus, type Deployment, type Environment, type ServiceType } from '@prisma/client';
-import { ErrorCodes } from '@liftoff/shared';
+import { ErrorCodes, safeParseLiftoffConfig } from '@liftoff/shared';
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { ProjectsService } from '../projects/projects.service';
@@ -8,7 +8,7 @@ import { DeploymentsService } from '../deployments/deployments.service';
 import { EnvironmentsService } from '../environments/environments.service';
 import { AutoSetupDto } from './dto/auto-setup.dto';
 import { SaveLayoutDto } from './dto/save-layout.dto';
-import { Exceptions } from '../common/exceptions/app.exception';
+import { AppException, Exceptions } from '../common/exceptions/app.exception';
 import { Role } from '@prisma/client';
 
 export interface CanvasNode {
@@ -21,6 +21,8 @@ export interface CanvasNode {
     serviceName?: string;
     endpoint?: string;
     imageUri?: string;
+    buildStrategy?: string;
+    runtimeSummary?: string;
     region?: string;
     instanceSize?: string;
     status?: DeploymentStatus;
@@ -60,6 +62,7 @@ interface EnvironmentWithDeployments {
   doAccountId: string;
   canvasPosition: { x: number; y: number } | null;
   deployments: Deployment[];
+  configParsed: unknown;
   pulumiStack: {
     outputs: Record<string, string> | null;
   } | null;
@@ -105,7 +108,13 @@ export class CanvasService {
         environments: {
           where: { deletedAt: null },
           orderBy: { createdAt: 'asc' },
-          include: {
+          select: {
+            id: true,
+            name: true,
+            gitBranch: true,
+            doAccountId: true,
+            canvasPosition: true,
+            configParsed: true,
             doAccount: { select: { region: true } },
             deployments: {
               orderBy: { createdAt: 'desc' },
@@ -144,6 +153,8 @@ export class CanvasService {
           serviceName: env.name,
           endpoint: latestDeployment?.endpoint ?? undefined,
           imageUri: latestDeployment?.imageUri ?? undefined,
+          buildStrategy: latestDeployment?.buildStrategy ?? undefined,
+          runtimeSummary: this.resolveRuntimeSummary(envWithData.configParsed),
           region: envWithData.doAccount.region,
           status: latestDeployment?.status,
           lastDeployTime: latestDeployment?.updatedAt?.toISOString(),
@@ -247,34 +258,16 @@ export class CanvasService {
   ): Promise<AutoSetupResult> {
     await this.projectsService.assertProjectRole(projectId, userId, [Role.OWNER, Role.ADMIN]);
 
+    const targetEnvironment = await this.resolveTargetEnvironment(projectId, userId, dto);
     const connectedRepo = await this.repositoriesService.findByProject(projectId, userId);
     let repoJustConnected = false;
     if (!connectedRepo) {
       await this.repositoriesService.connect(projectId, userId, {
         githubRepoId: dto.githubRepoId,
         fullName: dto.fullName,
-        branch: dto.branch,
+        branch: targetEnvironment.gitBranch,
       } as Parameters<typeof this.repositoriesService.connect>[2]);
       repoJustConnected = true;
-    }
-
-    let targetEnvironment: Environment | undefined;
-
-    if (dto.environmentId) {
-      const env = await this.prismaService.environment.findFirst({
-        where: { id: dto.environmentId, projectId, deletedAt: null },
-      });
-      if (!env) {
-        throw Exceptions.notFound('Environment not found', ErrorCodes.ENVIRONMENT_NOT_FOUND);
-      }
-      targetEnvironment = env;
-    } else {
-      const environments = await this.environmentsService.findAll(projectId, userId);
-      targetEnvironment = environments.find((env) => env.gitBranch === dto.branch) ?? environments[0];
-    }
-
-    if (!targetEnvironment) {
-      throw Exceptions.badRequest('No environment found. Please create an environment first.');
     }
 
     if (repoJustConnected) {
@@ -317,5 +310,105 @@ export class CanvasService {
         },
       });
     }
+  }
+
+  private async resolveTargetEnvironment(
+    projectId: string,
+    userId: string,
+    dto: AutoSetupDto,
+  ): Promise<Environment> {
+    if (dto.environmentId) {
+      const environment = await this.prismaService.environment.findFirst({
+        where: { id: dto.environmentId, projectId, deletedAt: null },
+      });
+      if (!environment) {
+        throw Exceptions.notFound('Environment not found', ErrorCodes.ENVIRONMENT_NOT_FOUND);
+      }
+
+      return environment;
+    }
+
+    const existingEnvironment = await this.prismaService.environment.findFirst({
+      where: { projectId, gitBranch: dto.branch, deletedAt: null },
+      orderBy: { createdAt: 'asc' },
+    });
+    if (existingEnvironment) {
+      return existingEnvironment;
+    }
+
+    const resolvedDoAccountId = await this.resolveDoAccountId(userId, dto.doAccountId);
+    try {
+      return await this.environmentsService.create(projectId, userId, {
+        name: 'production',
+        gitBranch: dto.branch,
+        doAccountId: resolvedDoAccountId,
+        serviceType: 'APP',
+      });
+    } catch (error) {
+      if (
+        error instanceof AppException &&
+        error.getErrorCode() === ErrorCodes.ENVIRONMENT_NAME_TAKEN
+      ) {
+        const productionEnvironment = await this.prismaService.environment.findFirst({
+          where: { projectId, name: 'production', deletedAt: null },
+          orderBy: { createdAt: 'asc' },
+        });
+        if (productionEnvironment) {
+          return productionEnvironment;
+        }
+      }
+
+      throw error;
+    }
+  }
+
+  private async resolveDoAccountId(userId: string, preferredDoAccountId?: string): Promise<string> {
+    if (preferredDoAccountId) {
+      const selectedDoAccount = await this.prismaService.dOAccount.findFirst({
+        where: { id: preferredDoAccountId, userId },
+        select: { id: true },
+      });
+      if (!selectedDoAccount) {
+        throw Exceptions.badRequest(
+          'Selected DigitalOcean account does not belong to the current user',
+          ErrorCodes.DO_ACCOUNT_NOT_FOUND,
+        );
+      }
+
+      return selectedDoAccount.id;
+    }
+
+    const defaultValidatedDoAccount = await this.prismaService.dOAccount.findFirst({
+      where: {
+        userId,
+        validatedAt: {
+          not: null,
+        },
+      },
+      orderBy: [{ validatedAt: 'asc' }, { createdAt: 'asc' }],
+      select: { id: true },
+    });
+
+    if (!defaultValidatedDoAccount) {
+      throw Exceptions.badRequest(
+        'No validated DigitalOcean account found. Connect and validate a DigitalOcean account to continue.',
+        ErrorCodes.DO_ACCOUNT_NOT_FOUND,
+      );
+    }
+
+    return defaultValidatedDoAccount.id;
+  }
+
+  private resolveRuntimeSummary(configParsed: unknown): string | undefined {
+    if (!configParsed) {
+      return undefined;
+    }
+
+    const parsedConfig = safeParseLiftoffConfig(configParsed);
+    if (!parsedConfig.success) {
+      return undefined;
+    }
+
+    return `${parsedConfig.data.runtime.instance_size} • port ${parsedConfig.data.runtime.port}`;
   }
 }

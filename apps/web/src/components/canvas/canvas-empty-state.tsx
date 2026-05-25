@@ -1,30 +1,12 @@
 'use client';
 
-import { Box, ChevronRight, Database, Github, Plus, Rocket, Search, Sparkles, Terminal, UploadCloud } from 'lucide-react';
+import { Box, ChevronRight, Database, Github, Rocket, Search, Sparkles, Terminal, UploadCloud } from 'lucide-react';
 import { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Spinner } from '@/components/ui/spinner';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
-import { Label } from '@/components/ui/label';
 import { useAutoSetup } from '@/hooks/queries/use-canvas';
 import { useAvailableRepos } from '@/hooks/queries/use-repositories';
-import { useDoAccounts } from '@/hooks/queries/use-do-accounts';
-import { useEnvironments, useCreateEnvironment } from '@/hooks/queries/use-environments';
 import type { AvailableRepository } from '@/hooks/queries/use-repositories';
 import { toast } from '@/components/ui/use-toast';
 import { useQueryClient } from '@tanstack/react-query';
@@ -41,18 +23,7 @@ export function CanvasEmptyState({ projectId, onSetupComplete }: CanvasEmptyStat
   const [isSetupInProgress, setIsSetupInProgress] = useState(false);
   const [setupStep, setSetupStep] = useState('');
 
-  const [envDialogOpen, setEnvDialogOpen] = useState(false);
-  const [envMode, setEnvMode] = useState<'select' | 'create'>('select');
-  const [selectedEnvId, setSelectedEnvId] = useState<string>('');
-  const [newEnvName, setNewEnvName] = useState('');
-  const [newEnvBranch, setNewEnvBranch] = useState('');
-  const [selectedDoAccountId, setSelectedDoAccountId] = useState('');
-  const [isCreatingEnv, setIsCreatingEnv] = useState(false);
-
   const { data: availableRepos, isLoading: reposLoading } = useAvailableRepos(projectId);
-  const { data: doAccounts } = useDoAccounts();
-  const { data: environments, isLoading: envsLoading } = useEnvironments(projectId);
-  const createEnvironmentMutation = useCreateEnvironment(projectId);
   const autoSetupMutation = useAutoSetup(projectId);
   const queryClient = useQueryClient();
 
@@ -62,84 +33,17 @@ export function CanvasEmptyState({ projectId, onSetupComplete }: CanvasEmptyStat
       repo.name.toLowerCase().includes(searchQuery.toLowerCase()),
   );
 
-  const hasEnvironments = environments && environments.length > 0;
-
-  const handleAutoDeployClick = () => {
+  const handleAutoDeployClick = async () => {
     if (!selectedRepo) return;
 
-    const defaultDoAccount = doAccounts?.[0];
-    if (defaultDoAccount) {
-      setSelectedDoAccountId(defaultDoAccount.id);
-    }
-
-    setNewEnvBranch(selectedRepo.defaultBranch);
-    setNewEnvName(selectedRepo.defaultBranch === 'main' ? 'production' : selectedRepo.defaultBranch);
-
-    if (environments && environments.length > 0) {
-      setEnvMode('select');
-      const first = environments[0];
-      if (first) setSelectedEnvId(first.id);
-    } else {
-      setEnvMode('create');
-    }
-
-    setEnvDialogOpen(true);
-  };
-
-  const handleEnvConfirmAndDeploy = async () => {
-    if (!selectedRepo) return;
-
-    let environmentId: string | undefined;
-
-    if (envMode === 'select' && selectedEnvId) {
-      environmentId = selectedEnvId;
-    } else if (envMode === 'create') {
-      if (!newEnvName.trim() || !newEnvBranch.trim() || !selectedDoAccountId) {
-        toast({
-          title: 'Missing fields',
-          description: 'Please fill in all fields to create an environment.',
-          variant: 'destructive',
-        });
-        return;
-      }
-
-      setIsCreatingEnv(true);
-      try {
-        const created = await createEnvironmentMutation.mutateAsync({
-          name: newEnvName.trim().toLowerCase().replace(/[^a-z0-9-]/g, '-'),
-          gitBranch: newEnvBranch.trim(),
-          doAccountId: selectedDoAccountId,
-        });
-        environmentId = created.id;
-      } catch {
-        toast({
-          title: 'Failed to create environment',
-          description: 'Please check your inputs and try again.',
-          variant: 'destructive',
-        });
-        setIsCreatingEnv(false);
-        return;
-      }
-      setIsCreatingEnv(false);
-    }
-
-    if (!environmentId) return;
-
-    setEnvDialogOpen(false);
     setIsSetupInProgress(true);
-    setSetupStep('Analyzing your code with Railpack…');
-
-    const doAccountId = envMode === 'create'
-      ? selectedDoAccountId
-      : environments?.find((e) => e.id === environmentId)?.doAccountId ?? doAccounts?.[0]?.id ?? '';
+    setSetupStep('Analyzing your code with Nixpacks…');
 
     try {
       await autoSetupMutation.mutateAsync({
         githubRepoId: selectedRepo.id,
         fullName: selectedRepo.fullName,
         branch: selectedRepo.defaultBranch,
-        doAccountId,
-        environmentId,
       });
 
       setSetupStep('Provisioning DigitalOcean infrastructure…');
@@ -289,132 +193,6 @@ export function CanvasEmptyState({ projectId, onSetupComplete }: CanvasEmptyStat
           </div>
         </div>
       </div>
-
-      <Dialog open={envDialogOpen} onOpenChange={setEnvDialogOpen}>
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>Select Environment</DialogTitle>
-            <DialogDescription>
-              Choose an existing environment or create a new one for this deployment.
-            </DialogDescription>
-          </DialogHeader>
-
-          <div className="space-y-4 py-2">
-            {hasEnvironments && (
-              <div className="flex gap-2">
-                <Button
-                  variant={envMode === 'select' ? 'default' : 'outline'}
-                  size="sm"
-                  onClick={() => setEnvMode('select')}
-                >
-                  Use Existing
-                </Button>
-                <Button
-                  variant={envMode === 'create' ? 'default' : 'outline'}
-                  size="sm"
-                  onClick={() => setEnvMode('create')}
-                >
-                  <Plus className="mr-1 h-3 w-3" />
-                  Create New
-                </Button>
-              </div>
-            )}
-
-            {envMode === 'select' && hasEnvironments ? (
-              <div className="space-y-2">
-                <Label>Environment</Label>
-                <div className="max-h-48 space-y-1 overflow-y-auto rounded-lg border border-border">
-                  {environments.map((env) => (
-                    <button
-                      key={env.id}
-                      type="button"
-                      onClick={() => setSelectedEnvId(env.id)}
-                      className={cn(
-                        'flex w-full items-center justify-between px-3 py-2 text-left text-sm transition-colors hover:bg-accent',
-                        selectedEnvId === env.id && 'bg-accent',
-                      )}
-                    >
-                      <span className="font-medium">{env.name}</span>
-                      <span className="text-xs text-muted-foreground">{env.gitBranch}</span>
-                    </button>
-                  ))}
-                </div>
-              </div>
-            ) : (
-              <div className="space-y-4">
-                <div className="space-y-2">
-                  <Label htmlFor="env-name">Environment Name</Label>
-                  <Input
-                    id="env-name"
-                    placeholder="e.g. production, staging"
-                    value={newEnvName}
-                    onChange={(e) => setNewEnvName(e.target.value)}
-                  />
-                  <p className="text-xs text-muted-foreground">
-                    Lowercase letters, numbers, and hyphens only
-                  </p>
-                </div>
-
-                <div className="space-y-2">
-                  <Label htmlFor="env-branch">Git Branch</Label>
-                  <Input
-                    id="env-branch"
-                    placeholder="main"
-                    value={newEnvBranch}
-                    onChange={(e) => setNewEnvBranch(e.target.value)}
-                  />
-                </div>
-
-                <div className="space-y-2">
-                  <Label>DigitalOcean Account</Label>
-                  {doAccounts && doAccounts.length > 0 ? (
-                    <Select value={selectedDoAccountId} onValueChange={setSelectedDoAccountId}>
-                      <SelectTrigger>
-                        <SelectValue placeholder="Select an account" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {doAccounts.map((account) => (
-                          <SelectItem key={account.id} value={account.id}>
-                            {account.region} &middot; {account.id.slice(0, 8)}…
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  ) : (
-                    <p className="text-sm text-muted-foreground">No accounts connected</p>
-                  )}
-                </div>
-              </div>
-            )}
-          </div>
-
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setEnvDialogOpen(false)}>
-              Cancel
-            </Button>
-            <Button
-              onClick={() => void handleEnvConfirmAndDeploy()}
-              disabled={
-                isCreatingEnv ||
-                (envMode === 'select' && !selectedEnvId) ||
-                (envMode === 'create' && (!newEnvName.trim() || !newEnvBranch.trim() || !selectedDoAccountId))
-              }
-            >
-              {isCreatingEnv ? (
-                <>
-                  <Spinner className="mr-2 h-4 w-4" />
-                  Creating…
-                </>
-              ) : (
-                <>
-                  <Rocket className="mr-2 h-4 w-4" />
-                  Deploy
-                </>
-              )}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </>
   );
 }

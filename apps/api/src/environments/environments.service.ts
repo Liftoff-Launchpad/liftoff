@@ -379,6 +379,10 @@ export class EnvironmentsService {
       '  replicas: 1',
       'healthcheck:',
       '  path: /',
+      'build:',
+      '  strategy: auto',
+      '  dockerfile_path: Dockerfile',
+      '  context: .',
     ].join('\n');
     const parsedYaml = yaml.load(configYaml);
 

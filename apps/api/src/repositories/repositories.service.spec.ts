@@ -166,6 +166,7 @@ describe('RepositoriesService', () => {
       branch: 'main',
       imageRepository: 'my-app/production',
       liftoffApiUrl: 'https://liftoff.example.com',
+      buildStrategy: 'auto',
       dockerfilePath: 'Dockerfile',
       dockerBuildContext: '.',
       doToken: 'decrypted-value',
@@ -381,6 +382,7 @@ describe('RepositoriesService', () => {
               port: 3000,
             },
             build: {
+              strategy: 'auto',
               dockerfile_path: './deploy/Dockerfile',
               context: './apps/web',
             },
@@ -413,8 +415,80 @@ describe('RepositoriesService', () => {
 
     expect(workflowGeneratorServiceMock.generate).toHaveBeenCalledWith(
       expect.objectContaining({
+        buildStrategy: 'auto',
         dockerfilePath: './deploy/Dockerfile',
         dockerBuildContext: './apps/web',
+      }),
+    );
+  });
+
+  it('connect still passes Dockerfile defaults when strategy is nixpacks fallback', async () => {
+    projectsServiceMock.assertProjectRole.mockResolvedValue(Role.OWNER);
+    prismaServiceMock.repository.findUnique.mockResolvedValue(null);
+    prismaServiceMock.user.findFirst.mockResolvedValue({ githubToken: 'encrypted-github-token' });
+    githubServiceMock.getRepository.mockResolvedValue({
+      id: 123,
+      name: 'my-app',
+      fullName: 'liftoff/my-app',
+      private: false,
+      defaultBranch: 'main',
+      cloneUrl: 'https://github.com/liftoff/my-app.git',
+      htmlUrl: 'https://github.com/liftoff/my-app',
+    });
+    prismaServiceMock.project.findFirst.mockResolvedValue({
+      id: 'project-1',
+      name: 'my-app',
+      environments: [
+        {
+          id: 'env-1',
+          name: 'production',
+          gitBranch: 'main',
+          doAccountId: 'do-1',
+          liftoffDeploySecret: null,
+          configParsed: {
+            version: '1.0',
+            service: {
+              name: 'my-app',
+              type: 'app',
+            },
+            runtime: {
+              port: 3000,
+            },
+            build: {
+              strategy: 'nixpacks',
+            },
+          },
+        },
+      ],
+    });
+    githubServiceMock.createWebhook.mockResolvedValue(555);
+    transactionMock.repository.create.mockResolvedValue({
+      id: 'repo-1',
+      projectId: 'project-1',
+      githubId: 123,
+      fullName: 'liftoff/my-app',
+      cloneUrl: 'https://github.com/liftoff/my-app.git',
+      branch: 'main',
+      webhookId: 555,
+      webhookSecret: 'encrypted-secret',
+      createdAt: now,
+      updatedAt: now,
+    });
+    transactionMock.environment.update.mockResolvedValue(undefined);
+    githubServiceMock.upsertActionsSecret.mockResolvedValue(undefined);
+    githubServiceMock.commitFile.mockResolvedValue(undefined);
+
+    await service.connect('project-1', 'user-1', {
+      githubRepoId: 123,
+      fullName: 'liftoff/my-app',
+      branch: 'main',
+    });
+
+    expect(workflowGeneratorServiceMock.generate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        buildStrategy: 'nixpacks',
+        dockerfilePath: 'Dockerfile',
+        dockerBuildContext: '.',
       }),
     );
   });

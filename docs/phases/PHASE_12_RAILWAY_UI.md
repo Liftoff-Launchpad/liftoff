@@ -61,7 +61,7 @@ components/canvas/
 
 ```
 POST /projects/:projectId/canvas/auto-setup
-     Body: { githubRepoId, fullName, branch, doAccountId }
+     Body: { githubRepoId, fullName, branch, doAccountId?, environmentId? }
      → Creates Project + Environment + connects repo + triggers first build
      → Returns: { projectId, environmentId, deploymentId, nodes, edges }
 
@@ -474,8 +474,11 @@ export class AutoSetupDto {
   @IsString() @IsNotEmpty()
   branch: string;
 
-  @IsString() @IsNotEmpty()
-  doAccountId: string;
+  @IsString() @IsOptional()
+  doAccountId?: string;
+
+  @IsString() @IsOptional()
+  environmentId?: string;
 }
 ```
 

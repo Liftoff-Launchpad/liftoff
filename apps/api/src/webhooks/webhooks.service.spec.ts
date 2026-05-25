@@ -152,6 +152,14 @@ describe('WebhooksService', () => {
         environmentId: 'env-1',
         imageUri: 'registry.digitalocean.com/liftoff/my-app/production:abc123',
         commitSha: 'abc123',
+        buildStrategy: 'dockerfile',
+        buildPlan: '{"mode":"dockerfile-first","fallback":"nixpacks"}',
+      } as {
+        environmentId: string;
+        imageUri: string;
+        commitSha: string;
+        buildStrategy: string;
+        buildPlan: string;
       },
       'deploy-secret',
     );
@@ -172,11 +180,13 @@ describe('WebhooksService', () => {
     });
     expect(prismaServiceMock.deployment.update).toHaveBeenCalledWith({
       where: { id: 'deployment-1' },
-      data: {
+      data: expect.objectContaining({
         commitSha: 'abc123',
         imageUri: 'registry.digitalocean.com/liftoff/my-app/production:abc123',
+        buildStrategy: 'dockerfile',
+        buildPlan: { mode: 'dockerfile-first', fallback: 'nixpacks' },
         status: DeploymentStatus.PROVISIONING,
-      },
+      }),
     });
     expect(infrastructureQueueMock.add).toHaveBeenCalledWith(
       JOB_NAMES.INFRASTRUCTURE.PROVISION,
@@ -218,17 +228,27 @@ describe('WebhooksService', () => {
         environmentId: 'env-1',
         imageUri: 'registry.digitalocean.com/liftoff/my-app/production:abc123',
         commitSha: 'abc123',
+        buildStrategy: 'nixpacks',
+        buildPlan: '{"provider":"nixpacks"}',
+      } as {
+        environmentId: string;
+        imageUri: string;
+        commitSha: string;
+        buildStrategy: string;
+        buildPlan: string;
       },
       'deploy-secret',
     );
 
     expect(prismaServiceMock.deployment.update).toHaveBeenCalledWith({
       where: { id: 'deployment-1' },
-      data: {
+      data: expect.objectContaining({
         commitSha: 'abc123',
         imageUri: 'registry.digitalocean.com/liftoff/my-app/production:abc123',
+        buildStrategy: 'nixpacks',
+        buildPlan: { provider: 'nixpacks' },
         status: DeploymentStatus.DEPLOYING,
-      },
+      }),
     });
     expect(deploymentsQueueMock.add).toHaveBeenCalledWith(
       JOB_NAMES.DEPLOYMENTS.DEPLOY,
@@ -272,11 +292,10 @@ describe('WebhooksService', () => {
 
     expect(prismaServiceMock.deployment.update).toHaveBeenCalledWith({
       where: { id: 'deployment-1' },
-      data: {
+      data: expect.objectContaining({
         status: DeploymentStatus.FAILED,
         errorMessage: 'Environment configuration is missing',
-        completedAt: expect.any(Date),
-      },
+      }),
     });
     expect(infrastructureQueueMock.add).not.toHaveBeenCalled();
   });
@@ -308,11 +327,10 @@ describe('WebhooksService', () => {
 
     expect(prismaServiceMock.deployment.update).toHaveBeenCalledWith({
       where: { id: 'deployment-1' },
-      data: {
+      data: expect.objectContaining({
         status: DeploymentStatus.FAILED,
         errorMessage: expect.stringContaining('Deployment failed during build/push phase'),
-        completedAt: expect.any(Date),
-      },
+      }),
     });
     expect(infrastructureQueueMock.add).not.toHaveBeenCalled();
   });

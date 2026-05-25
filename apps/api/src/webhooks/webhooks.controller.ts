@@ -65,6 +65,8 @@ export class WebhooksController {
       commitSha: dto.commitSha,
       status: dto.status,
       runUrl: dto.runUrl,
+      buildStrategy: dto.buildStrategy,
+      buildPlan: dto.buildPlan,
     };
 
     await this.webhooksService.handleDeployComplete(payload, secretHeader);

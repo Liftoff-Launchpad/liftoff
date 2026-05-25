@@ -1,7 +1,7 @@
 'use client';
 
 import { zodResolver } from '@hookform/resolvers/zod';
-import { GitBranch, Github, Grid2X2, Layers3, List, Plus, Rocket, Search, Sparkles } from 'lucide-react';
+import { Github, Grid2X2, Layers3, List, Plus, Rocket, Search, Sparkles } from 'lucide-react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
@@ -19,19 +19,10 @@ import {
 } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
 import { Spinner } from '@/components/ui/spinner';
 import { toast } from '@/components/ui/use-toast';
 import { useCreateProject, useProjects, type ProjectListItem } from '@/hooks/queries/use-projects';
 import { useAvailableRepos, type AvailableRepository } from '@/hooks/queries/use-repositories';
-import { useCreateEnvironment } from '@/hooks/queries/use-environments';
-import { useDoAccounts } from '@/hooks/queries/use-do-accounts';
 import { useAutoSetup } from '@/hooks/queries/use-canvas';
 import { useQueryClient } from '@tanstack/react-query';
 import { cn } from '@/lib/utils';
@@ -46,7 +37,7 @@ const createProjectSchema = z.object({
 });
 
 type CreateProjectValues = z.infer<typeof createProjectSchema>;
-type FlowStep = 'name' | 'repo' | 'env' | 'deploying';
+type FlowStep = 'name' | 'repo' | 'deploying';
 
 const PAGE_SIZE = 12;
 
@@ -86,18 +77,13 @@ export default function ProjectsPage(): JSX.Element {
   const [createdProjectId, setCreatedProjectId] = useState('');
   const [repoSearch, setRepoSearch] = useState('');
   const [selectedRepo, setSelectedRepo] = useState<AvailableRepository | null>(null);
-  const [envName, setEnvName] = useState('production');
-  const [envBranch, setEnvBranch] = useState('main');
-  const [selectedDoAccountId, setSelectedDoAccountId] = useState('');
   const [deployStep, setDeployStep] = useState('');
 
   const { data, isLoading } = useProjects(page, PAGE_SIZE);
   const createProjectMutation = useCreateProject();
-  const { data: doAccounts } = useDoAccounts();
   const queryClient = useQueryClient();
 
   const { data: availableRepos, isLoading: reposLoading } = useAvailableRepos(createdProjectId);
-  const createEnvMutation = useCreateEnvironment(createdProjectId);
   const autoSetupMutation = useAutoSetup(createdProjectId);
 
   const total = data?.total ?? 0;
@@ -119,9 +105,6 @@ export default function ProjectsPage(): JSX.Element {
     setCreatedProjectId('');
     setSelectedRepo(null);
     setRepoSearch('');
-    setEnvName('production');
-    setEnvBranch('main');
-    setSelectedDoAccountId('');
     setDeployStep('');
     form.reset();
   };
@@ -141,56 +124,34 @@ export default function ProjectsPage(): JSX.Element {
 
   const handleSelectRepo = (repo: AvailableRepository): void => {
     setSelectedRepo(repo);
-    setEnvBranch(repo.defaultBranch);
-    setEnvName(repo.defaultBranch === 'main' ? 'production' : repo.defaultBranch);
-    if (doAccounts && doAccounts.length > 0 && doAccounts[0]) {
-      setSelectedDoAccountId(doAccounts[0].id);
-    }
-    setStep('env');
+    void handleDeploy(repo);
   };
 
-  const handleDeploy = async (): Promise<void> => {
-    if (!selectedRepo || !selectedDoAccountId || !createdProjectId) return;
+  const handleDeploy = async (repo: AvailableRepository): Promise<void> => {
+    if (!createdProjectId) return;
 
     setStep('deploying');
-    setDeployStep('Creating launch environment...');
-
-    let envId: string;
-    try {
-      const env = await createEnvMutation.mutateAsync({
-        name: envName.trim().toLowerCase().replace(/[^a-z0-9-]/g, '-'),
-        gitBranch: envBranch.trim(),
-        doAccountId: selectedDoAccountId,
-      });
-      envId = env.id;
-    } catch {
-      toast({ title: 'Failed to create environment', description: 'Please try again.', variant: 'destructive' });
-      setStep('env');
-      return;
-    }
-
-    setDeployStep('Preparing DigitalOcean launchpad...');
+    setDeployStep('Preparing deployment...');
     try {
       await autoSetupMutation.mutateAsync({
-        githubRepoId: selectedRepo.id,
-        fullName: selectedRepo.fullName,
-        branch: envBranch,
-        doAccountId: selectedDoAccountId,
-        environmentId: envId,
+        githubRepoId: repo.id,
+        fullName: repo.fullName,
+        branch: repo.defaultBranch,
       });
     } catch {
       toast({ title: 'Deployment failed', description: 'Please try again.', variant: 'destructive' });
-      setStep('env');
+      setStep('repo');
       return;
     }
 
     setDeployStep('Deployment queued. Opening canvas...');
     queryClient.invalidateQueries({ queryKey: ['projects'] }).catch(() => {});
-    toast({ title: 'Deployment started', description: `${selectedRepo.fullName} is on the pad.` });
+    toast({ title: 'Deployment started', description: `${repo.fullName} is on the pad.` });
 
+    const projectId = createdProjectId;
     setOpen(false);
     resetFlow();
-    router.push(`/projects/${createdProjectId}/canvas`);
+    router.push(`/projects/${projectId}/canvas`);
   };
 
   return (
@@ -247,7 +208,7 @@ export default function ProjectsPage(): JSX.Element {
                   <>
                     <DialogHeader>
                       <DialogTitle>Connect repository</DialogTitle>
-                      <DialogDescription>Select a GitHub repository to put on the canvas.</DialogDescription>
+                      <DialogDescription>Select a GitHub repository to deploy in one click.</DialogDescription>
                     </DialogHeader>
                     <div className="space-y-3">
                       <div className="relative">
@@ -286,56 +247,6 @@ export default function ProjectsPage(): JSX.Element {
                         )}
                       </div>
                     </div>
-                  </>
-                )}
-
-                {step === 'env' && (
-                  <>
-                    <DialogHeader>
-                      <DialogTitle>Configure environment</DialogTitle>
-                      <DialogDescription>Choose the branch and DigitalOcean account for {selectedRepo?.fullName}.</DialogDescription>
-                    </DialogHeader>
-                    <div className="space-y-4">
-                      <div className="space-y-2">
-                        <Label>Environment name</Label>
-                        <Input value={envName} onChange={(e) => setEnvName(e.target.value)} placeholder="production" />
-                      </div>
-                      <div className="space-y-2">
-                        <Label>Git branch</Label>
-                        <Input value={envBranch} onChange={(e) => setEnvBranch(e.target.value)} />
-                      </div>
-                      <div className="space-y-2">
-                        <Label>DigitalOcean account</Label>
-                        {doAccounts && doAccounts.length > 0 ? (
-                          <Select value={selectedDoAccountId} onValueChange={setSelectedDoAccountId}>
-                            <SelectTrigger>
-                              <SelectValue placeholder="Select account" />
-                            </SelectTrigger>
-                            <SelectContent>
-                              {doAccounts.map((a) => (
-                                <SelectItem key={a.id} value={a.id}>
-                                  {a.region} / {a.id.slice(0, 8)}
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                        ) : (
-                          <p className="text-sm text-destructive">No DO accounts connected. Go to Settings first.</p>
-                        )}
-                      </div>
-                    </div>
-                    <DialogFooter className="gap-2">
-                      <Button variant="outline" onClick={() => setStep('repo')}>
-                        Back
-                      </Button>
-                      <Button
-                        onClick={() => void handleDeploy()}
-                        disabled={!envName.trim() || !envBranch.trim() || !selectedDoAccountId}
-                      >
-                        <Rocket className="mr-2 h-4 w-4" />
-                        Deploy
-                      </Button>
-                    </DialogFooter>
                   </>
                 )}
 

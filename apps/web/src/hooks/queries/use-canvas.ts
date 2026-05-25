@@ -21,6 +21,8 @@ export interface CanvasNode {
     bucketName?: string;
     outputs?: Record<string, string>;
     lastDeployTime?: string;
+    buildStrategy?: string;
+    runtimeSummary?: string;
   };
 }
 
@@ -42,7 +44,7 @@ export interface AutoSetupInput {
   githubRepoId: number;
   fullName: string;
   branch: string;
-  doAccountId: string;
+  doAccountId?: string;
   environmentId?: string;
 }
 

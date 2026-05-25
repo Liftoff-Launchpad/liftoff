@@ -16,11 +16,12 @@ describe('LiftoffConfigSchema build settings', () => {
       },
     });
 
+    expect(config.build.strategy).toBe('auto');
     expect(config.build.dockerfile_path).toBe('Dockerfile');
     expect(config.build.context).toBe('.');
   });
 
-  it('parses custom build dockerfile_path and context', () => {
+  it('parses custom build strategy, dockerfile_path and context', () => {
     const config = parseLiftoffConfig({
       version: '1.0',
       service: {
@@ -31,12 +32,34 @@ describe('LiftoffConfigSchema build settings', () => {
         port: 3000,
       },
       build: {
+        strategy: 'dockerfile',
         dockerfile_path: './deploy/Dockerfile',
         context: './apps/web',
       },
     });
 
+    expect(config.build.strategy).toBe('dockerfile');
     expect(config.build.dockerfile_path).toBe('./deploy/Dockerfile');
     expect(config.build.context).toBe('./apps/web');
+  });
+
+  it('supports nixpacks strategy for Dockerfile fallback workflows', () => {
+    const config = parseLiftoffConfig({
+      version: '1.0',
+      service: {
+        name: 'my-app',
+        type: 'app',
+      },
+      runtime: {
+        port: 3000,
+      },
+      build: {
+        strategy: 'nixpacks',
+      },
+    });
+
+    expect(config.build.strategy).toBe('nixpacks');
+    expect(config.build.dockerfile_path).toBe('Dockerfile');
+    expect(config.build.context).toBe('.');
   });
 });

@@ -1,5 +1,5 @@
 import { InjectQueue } from '@nestjs/bullmq';
-import { DeploymentStatus } from '@prisma/client';
+import { DeploymentStatus, Prisma } from '@prisma/client';
 import { ACTIVE_STATUSES, ErrorCodes, safeParseLiftoffConfig } from '@liftoff/shared';
 import { HttpStatus, Injectable, Logger } from '@nestjs/common';
 import { Queue } from 'bullmq';
@@ -40,6 +40,8 @@ export interface DeployCompletePayload {
   commitSha: string;
   status?: string;
   runUrl?: string;
+  buildStrategy?: 'dockerfile' | 'nixpacks' | string;
+  buildPlan?: string;
 }
 
 /**
@@ -259,6 +261,9 @@ export class WebhooksService {
         data: {
           status: DeploymentStatus.FAILED,
           errorMessage: `Deployment failed during build/push phase. GitHub Actions run: ${payload.runUrl || 'unknown'}`,
+          buildRunUrl: payload.runUrl ?? null,
+          buildStrategy: payload.buildStrategy?.toLowerCase() ?? null,
+          buildPlan: this.parseBuildPlan(payload.buildPlan),
           completedAt: new Date(),
         },
       });
@@ -275,6 +280,9 @@ export class WebhooksService {
         data: {
           commitSha: payload.commitSha,
           imageUri: payload.imageUri,
+          buildRunUrl: payload.runUrl ?? null,
+          buildStrategy: payload.buildStrategy?.toLowerCase() ?? null,
+          buildPlan: this.parseBuildPlan(payload.buildPlan),
           status: DeploymentStatus.DEPLOYING,
         },
       });
@@ -312,6 +320,9 @@ export class WebhooksService {
       data: {
         commitSha: payload.commitSha,
         imageUri: payload.imageUri,
+        buildRunUrl: payload.runUrl ?? null,
+        buildStrategy: payload.buildStrategy?.toLowerCase() ?? null,
+        buildPlan: this.parseBuildPlan(payload.buildPlan),
         status: DeploymentStatus.PROVISIONING,
       },
     });
@@ -399,6 +410,19 @@ export class WebhooksService {
     }
 
     return null;
+  }
+
+  private parseBuildPlan(buildPlan: string | undefined): Prisma.InputJsonValue | undefined {
+    if (!buildPlan) {
+      return undefined;
+    }
+
+    try {
+      const parsed = JSON.parse(buildPlan) as Prisma.InputJsonValue;
+      return parsed;
+    } catch {
+      return buildPlan;
+    }
   }
 
   private async markDeploymentFailedForMissingConfig(deploymentId: string): Promise<void> {

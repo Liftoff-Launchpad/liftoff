@@ -20,6 +20,8 @@ interface ServiceNodeData {
   gitBranch?: string;
   commitSha?: string;
   repoName?: string;
+  buildStrategy?: string;
+  runtimeSummary?: string;
 }
 
 const STATUS_CONFIG: Record<string, { border: string; dot: string; animate?: string; label: string }> = {
@@ -96,6 +98,21 @@ function ServiceNodeComponent({ data, selected }: NodeProps) {
           <p className="text-[10px] text-muted-foreground truncate font-mono">
             {d.imageUri.split('/').pop()?.slice(0, 24) ?? ''}
           </p>
+        )}
+
+        {(d.buildStrategy || d.runtimeSummary) && (
+          <div className="rounded-md border border-border/60 bg-background/40 px-2 py-1.5 text-[10px] text-muted-foreground">
+            {d.buildStrategy && (
+              <p className="truncate">
+                <span className="text-foreground/90">Build:</span> {d.buildStrategy}
+              </p>
+            )}
+            {d.runtimeSummary && (
+              <p className="truncate">
+                <span className="text-foreground/90">Runtime:</span> {d.runtimeSummary}
+              </p>
+            )}
+          </div>
         )}
       </div>
 
