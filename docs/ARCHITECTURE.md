@@ -77,12 +77,12 @@ BullMQ — deployments queue
 Deployment Processor
    │
    ├─ 1. Status → BUILDING
-   │     Trigger GitHub Actions workflow (docker build + push to user's DOCR)
+   │     Trigger GitHub Actions workflow (Dockerfile-first build, Nixpacks fallback, then push to user's DOCR)
    │     via GitHub API workflow_dispatch
    │
    ├─ 2. Status → PUSHING
-   │     GitHub Actions: docker build → docker push to DOCR
-   │     GitHub Actions calls POST /webhooks/deploy-complete { imageUri, commitSha }
+   │     GitHub Actions: docker build (or nixpacks build) → docker push to DOCR
+   │     GitHub Actions calls POST /webhooks/deploy-complete { imageUri, commitSha, buildStrategy, buildPlan }
    │
    ├─ 3. Status → PROVISIONING
    │     Decrypt user's DO token from DOAccount table
@@ -228,7 +228,7 @@ Base URL: `/api/v1`
 | Monitoring | `/environments/:eid/logs` | `GET /` + WebSocket stream |
 | Monitoring | `/environments/:eid/metrics` | `GET /cpu`, `GET /memory`, `GET /bandwidth` |
 | Webhooks | `/webhooks/github` | `POST /` (GitHub push receiver) |
-| Webhooks | `/webhooks/deploy-complete` | `POST /` (GitHub Actions callback after DOCR push) |
+| Webhooks | `/webhooks/deploy-complete` | `POST /` (GitHub Actions callback after DOCR push, includes build strategy metadata) |
 
 ---
 

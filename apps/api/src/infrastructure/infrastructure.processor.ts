@@ -422,6 +422,7 @@ export class InfrastructureProcessor extends WorkerHost {
       env: {},
       secrets: [],
       build: {
+        strategy: 'auto',
         dockerfile_path: 'Dockerfile',
         context: '.',
       },

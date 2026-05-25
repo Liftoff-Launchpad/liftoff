@@ -81,6 +81,7 @@ export function ProjectCanvas({ projectId }: ProjectCanvasProps) {
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const [contextMenuPos, setContextMenuPos] = useState<{ x: number; y: number } | null>(null);
   const [viewMode, setViewMode] = useState<'canvas' | 'dev'>('canvas');
+  const [activityOpen, setActivityOpen] = useState(false);
 
   const addChange = useStagedChangesStore((s) => s.addChange);
 
@@ -277,21 +278,24 @@ export function ProjectCanvas({ projectId }: ProjectCanvasProps) {
   const hasNodes = nodes.length > 0;
 
   return (
-    <div ref={reactFlowWrapper} className="h-full w-full">
-      {hasNodes && (
-        <CanvasToolbar
-          projectId={projectId}
-          projectName={canvasData?.projectName ?? 'Project'}
-          nodes={nodes}
-          mode={viewMode}
-          onModeChange={setViewMode}
-        />
-      )}
+    <div ref={reactFlowWrapper} className="h-full w-full overflow-hidden bg-background">
+      <CanvasToolbar
+        projectId={projectId}
+        projectName={canvasData?.projectName ?? 'New project'}
+        nodes={nodes}
+        mode={viewMode}
+        onModeChange={setViewMode}
+        onAddClick={() => setCommandPaletteOpen(true)}
+        activityOpen={activityOpen}
+        onActivityToggle={() => setActivityOpen((open) => !open)}
+      />
 
       {!hasNodes ? (
-        <CanvasEmptyState projectId={projectId} />
+        <div className="absolute inset-0 pt-16">
+          <CanvasEmptyState projectId={projectId} />
+        </div>
       ) : viewMode === 'dev' ? (
-        <div className="absolute inset-0 top-12 overflow-hidden">
+        <div className="absolute inset-0 top-16 overflow-hidden">
           <DevModeView projectId={projectId} environmentId={activeEnvironmentId} />
         </div>
       ) : (
@@ -306,52 +310,81 @@ export function ProjectCanvas({ projectId }: ProjectCanvasProps) {
           onPaneContextMenu={onPaneContextMenu}
           nodeTypes={nodeTypes}
           fitView
-          className="bg-background"
+          fitViewOptions={{ maxZoom: 1 }}
+          className="absolute liftoff-canvas"
+          style={{ inset: '64px 0 0 0', height: 'calc(100% - 64px)', width: '100%' }}
         >
           <Background
             variant={BackgroundVariant.Dots}
             gap={20}
             size={1}
-            color="hsl(var(--muted-foreground) / 0.1)"
+            color="hsl(var(--muted-foreground) / 0.16)"
           />
-          <Controls className="!bg-card !border-border !rounded-lg !shadow-lg [&>button]:!bg-card [&>button]:!border-border [&>button]:!text-foreground [&>button:hover]:!bg-accent" />
+          <Controls
+            position="bottom-left"
+            showInteractive={false}
+            className="!m-4 !overflow-hidden !rounded-lg !border !border-border/80 !bg-card/90 !shadow-[0_18px_60px_hsl(252_30%_2%/0.35)] [&>button]:!h-10 [&>button]:!w-10 [&>button]:!border-border/80 [&>button]:!bg-card/95 [&>button]:!text-muted-foreground [&>button:hover]:!bg-secondary [&>button:hover]:!text-foreground"
+          />
         </ReactFlow>
       )}
 
-      {hasNodes && viewMode === 'canvas' && (
-        <>
-          <ConfigDrawer
-            open={!!selectedNode}
-            onClose={() => setSelectedNode(null)}
-            nodeLabel={selectedNodeData?.data.label}
-            nodeId={selectedNode?.id}
-          >
-            {selectedNode && (
-              <>
-                <DrawerMetricsTab environmentId={String(selectedNode.data?.environmentId ?? '')} />
-                <DrawerVariablesTab
-                  nodeId={selectedNode.id}
-                  canvasNodes={canvasData?.nodes ?? []}
-                  onChange={(vars) => {
-                    addChange({
-                      nodeId: selectedNode.id,
-                      type: 'CHANGE_VARIABLE',
-                      label: `Update ${vars.length} variables`,
-                      payload: { variables: vars },
-                    });
-                  }}
-                />
-                <DrawerSettingsTab
-                  nodeId={selectedNode.id}
-                  environmentId={String(selectedNode.data?.environmentId ?? '')}
-                  instanceSize={String(selectedNode.data?.instanceSize ?? '')}
-                  domains={[]}
-                />
-              </>
-            )}
-          </ConfigDrawer>
+      {activityOpen && (
+        <aside className="liftoff-panel absolute bottom-4 right-4 top-20 z-20 w-[min(460px,calc(100vw-112px))] rounded-lg p-6">
+          <h2 className="text-xl font-semibold">Activity</h2>
+          <div className="mt-8 rounded-lg border border-border bg-secondary/40 p-5">
+            <div className="flex items-center gap-3">
+              <span className="h-2 w-2 rounded-full bg-primary" />
+              <div>
+                <p className="font-medium">Canvas ready</p>
+                <p className="mt-1 text-sm text-muted-foreground">Use Add to stage services, databases, buckets, or future endpoints.</p>
+              </div>
+            </div>
+          </div>
+        </aside>
+      )}
 
-          <StagedChangesBar onDeploy={handleDeploy} />
+      {viewMode === 'canvas' && (
+        <>
+          {hasNodes && (
+            <>
+              <ConfigDrawer
+                open={!!selectedNode}
+                onClose={() => setSelectedNode(null)}
+                nodeLabel={selectedNodeData?.data.label}
+                nodeId={selectedNode?.id}
+                status={String(selectedNode?.data?.status ?? 'PENDING')}
+                repoName={String(selectedNode?.data?.repoName ?? selectedNodeData?.data.label ?? '')}
+                region={String(selectedNode?.data?.region ?? selectedNodeData?.data?.region ?? '')}
+                replicas={Number(selectedNode?.data?.replicas ?? 1)}
+              >
+                {selectedNode && (
+                  <>
+                    <DrawerMetricsTab environmentId={String(selectedNode.data?.environmentId ?? '')} />
+                    <DrawerVariablesTab
+                      nodeId={selectedNode.id}
+                      canvasNodes={canvasData?.nodes ?? []}
+                      onChange={(vars) => {
+                        addChange({
+                          nodeId: selectedNode.id,
+                          type: 'CHANGE_VARIABLE',
+                          label: `Update ${vars.length} variables`,
+                          payload: { variables: vars },
+                        });
+                      }}
+                    />
+                    <DrawerSettingsTab
+                      nodeId={selectedNode.id}
+                      environmentId={String(selectedNode.data?.environmentId ?? '')}
+                      instanceSize={String(selectedNode.data?.instanceSize ?? '')}
+                      domains={[]}
+                    />
+                  </>
+                )}
+              </ConfigDrawer>
+
+              <StagedChangesBar onDeploy={handleDeploy} />
+            </>
+          )}
 
           <CommandPalette
             open={commandPaletteOpen}

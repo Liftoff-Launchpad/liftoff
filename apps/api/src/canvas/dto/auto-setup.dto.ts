@@ -14,8 +14,8 @@ export class AutoSetupDto {
   branch!: string;
 
   @IsString()
-  @IsNotEmpty()
-  doAccountId!: string;
+  @IsOptional()
+  doAccountId?: string;
 
   @IsString()
   @IsOptional()

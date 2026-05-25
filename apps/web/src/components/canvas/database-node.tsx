@@ -2,6 +2,7 @@
 
 import { memo } from 'react';
 import { Handle, Position, type NodeProps } from '@xyflow/react';
+import { Box, Database, Zap } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 interface DatabaseNodeData {
@@ -16,22 +17,23 @@ interface DatabaseNodeData {
 }
 
 const ENGINE_CONFIG = {
-  postgres: { icon: '🐘', label: 'PostgreSQL', color: 'border-blue-600/50' },
-  redis: { icon: '⚡', label: 'Redis', color: 'border-red-500/50' },
-  storage: { icon: '🪣', label: 'Spaces', color: 'border-orange-500/50' },
+  postgres: { icon: Database, label: 'PostgreSQL', color: 'border-sky-500/50' },
+  redis: { icon: Zap, label: 'Redis', color: 'border-red-500/50' },
+  storage: { icon: Box, label: 'Spaces', color: 'border-orange-500/50' },
 };
 
 function DatabaseNodeComponent({ data, selected }: NodeProps) {
   const d = data as unknown as DatabaseNodeData;
   const engine = d.databaseEngine ?? 'postgres';
   const cfg = ENGINE_CONFIG[engine] ?? ENGINE_CONFIG.postgres;
+  const Icon = cfg.icon;
   const borderColor = d.isStaged ? 'border-amber-400' : cfg.color;
 
   return (
     <div
       className={cn(
-        'relative w-56 rounded-xl border-2 bg-card shadow-lg transition-all duration-200',
-        'hover:shadow-xl',
+        'relative w-64 rounded-lg border bg-card/95 shadow-[0_20px_60px_hsl(252_30%_2%/0.32)] transition-all duration-200',
+        'hover:border-primary/50',
         borderColor,
         selected && 'ring-2 ring-primary/50 ring-offset-2 ring-offset-background',
       )}
@@ -42,21 +44,22 @@ function DatabaseNodeComponent({ data, selected }: NodeProps) {
         className="!w-3 !h-3 !border-2 !border-background !bg-muted-foreground"
       />
 
-      <div className="flex items-center justify-between px-3 py-2.5 rounded-t-[10px] border-b border-border bg-accent/30">
+      <div className="flex items-center justify-between px-4 py-4 border-b border-border">
         <div className="flex items-center gap-2">
-          <span className="text-sm">{cfg.icon}</span>
-          <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-            {cfg.label}
+          <span className="flex h-8 w-8 items-center justify-center rounded-md border border-border bg-secondary">
+            <Icon className="h-4 w-4" />
           </span>
+          <div>
+            <p className="text-sm font-semibold">{d.label}</p>
+            <p className="text-xs text-muted-foreground">{cfg.label}</p>
+          </div>
         </div>
         {!d.isStaged && (
-          <span className="text-[10px] font-semibold uppercase text-emerald-500">Active</span>
+          <span className="h-2.5 w-2.5 rounded-full bg-emerald-400" />
         )}
       </div>
 
-      <div className="px-3 py-3 space-y-2">
-        <p className="text-sm font-semibold">{d.label}</p>
-
+      <div className="px-4 py-3 space-y-2">
         {d.hostname && (
           <div className="space-y-0.5">
             <p className="text-[10px] text-muted-foreground uppercase tracking-wider">Host</p>

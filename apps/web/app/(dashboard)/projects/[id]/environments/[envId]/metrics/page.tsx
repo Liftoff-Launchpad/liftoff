@@ -1,194 +1,53 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { useParams } from 'next/navigation';
+import { BarChart3, Clock, Plus } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { Card } from '@/components/ui/card';
-import { apiClient } from '@/lib/api-client';
-import { useAuthStore } from '@/store/auth.store';
-import { RefreshCw } from 'lucide-react';
-import {
-  LineChart,
-  Line,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  Legend,
-  ResponsiveContainer,
-} from 'recharts';
 
-interface MetricDatapoint {
-  timestamp: number;
-  value: number;
-}
-
-/**
- * Environment metrics page for viewing performance metrics.
- */
 export default function EnvironmentMetricsPage(): JSX.Element {
-  const params = useParams() as { id: string; envId: string };
-  const isAuthenticated = useAuthStore((state: any) => state.isAuthenticated);
-
-  const [cpuMetrics, setCpuMetrics] = useState<MetricDatapoint[]>([]);
-  const [memoryMetrics, setMemoryMetrics] = useState<MetricDatapoint[]>([]);
-  const [bandwidthMetrics, setBandwidthMetrics] = useState<MetricDatapoint[]>([]);
-  const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const fetchMetrics = async () => {
-    if (!isAuthenticated || !params.envId) {
-      return;
-    }
-
-    setIsLoading(true);
-    setError(null);
-
-    try {
-      const [cpuResponse, memoryResponse, bandwidthResponse] = await Promise.all([
-        apiClient.get(`/environments/${params.envId}/metrics/cpu`),
-        apiClient.get(`/environments/${params.envId}/metrics/memory`),
-        apiClient.get(`/environments/${params.envId}/metrics/bandwidth`),
-      ]);
-
-      setCpuMetrics(cpuResponse.data);
-      setMemoryMetrics(memoryResponse.data);
-      setBandwidthMetrics(bandwidthResponse.data);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to fetch metrics');
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    fetchMetrics();
-
-    // Auto-refresh every 60 seconds
-    const interval = setInterval(fetchMetrics, 60000);
-    return () => clearInterval(interval);
-  }, [params.envId, isAuthenticated]);
-
-  const formatTime = (timestamp: number): string => {
-    return new Date(timestamp).toLocaleTimeString();
-  };
-
-  const formatChartData = (metrics: MetricDatapoint[]) => {
-    return metrics.map((m) => ({
-      time: formatTime(m.timestamp),
-      value: Math.round(m.value * 10) / 10,
-    }));
-  };
-
-  const cpuData = formatChartData(cpuMetrics);
-  const memoryData = formatChartData(memoryMetrics);
-  const bandwidthData = formatChartData(bandwidthMetrics);
-
   return (
-    <div className="space-y-6">
+    <section className="liftoff-panel flex min-h-[calc(100vh-96px)] flex-col rounded-lg p-4">
       <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-3xl font-bold">Performance Metrics</h1>
-          <p className="text-gray-600">Monitor your application performance</p>
-        </div>
-
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={fetchMetrics}
-          disabled={isLoading}
-        >
-          <RefreshCw className={`h-4 w-4 ${isLoading ? 'animate-spin' : ''}`} />
+        <Button variant="outline" className="gap-2">
+          <Clock className="h-4 w-4" />
+          Last 1 hour
+        </Button>
+        <Button variant="outline" className="gap-2">
+          <Plus className="h-4 w-4" />
+          Add block
         </Button>
       </div>
 
-      {error && (
-        <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-red-800">
-          Error: {error}
+      <div className="mt-4 flex flex-1 items-center justify-center rounded-lg border border-dashed border-border bg-background/20">
+        <div className="max-w-md text-center">
+          <div className="mx-auto mb-6 grid h-28 w-28 grid-cols-2 gap-2 text-muted-foreground">
+            {[0, 1, 2, 3].map((item) => (
+              <div key={item} className="rounded-md border border-border bg-secondary/40 p-2">
+                <div className="mb-4 h-2 w-12 rounded bg-muted" />
+                <div className="flex h-10 items-end gap-1">
+                  {Array.from({ length: 10 }).map((_, index) => (
+                    <span
+                      key={index}
+                      className="w-1 rounded bg-muted-foreground/30"
+                      style={{ height: `${10 + ((index + item) % 5) * 7}px` }}
+                    />
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+          <h1 className="text-xl font-semibold">Observe this environment</h1>
+          <p className="mt-3 text-sm leading-6 text-muted-foreground">
+            Monitor project usage, resource metrics, and custom log dashboards once metrics endpoints are wired.
+          </p>
+          <div className="mt-8 grid gap-2">
+            <Button variant="outline">Add new item</Button>
+            <Button>
+              <BarChart3 className="mr-2 h-4 w-4" />
+              Start with a simple dashboard
+            </Button>
+          </div>
         </div>
-      )}
-
-      {/* CPU Metrics */}
-      <Card className="p-6">
-        <h2 className="text-xl font-semibold mb-4">CPU Usage (%)</h2>
-        {cpuData.length > 0 ? (
-          <ResponsiveContainer width="100%" height={300}>
-            <LineChart data={cpuData}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey="time" />
-              <YAxis domain={[0, 100]} />
-              <Tooltip formatter={(value: any) => `${value}%`} />
-              <Legend />
-              <Line
-                type="monotone"
-                dataKey="value"
-                stroke="#3b82f6"
-                name="CPU %"
-                dot={false}
-              />
-            </LineChart>
-          </ResponsiveContainer>
-        ) : (
-          <div className="h-[300px] flex items-center justify-center text-gray-500">
-            No CPU metrics available
-          </div>
-        )}
-      </Card>
-
-      {/* Memory Metrics */}
-      <Card className="p-6">
-        <h2 className="text-xl font-semibold mb-4">Memory Usage (%)</h2>
-        {memoryData.length > 0 ? (
-          <ResponsiveContainer width="100%" height={300}>
-            <LineChart data={memoryData}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey="time" />
-              <YAxis domain={[0, 100]} />
-              <Tooltip formatter={(value: any) => `${value}%`} />
-              <Legend />
-              <Line
-                type="monotone"
-                dataKey="value"
-                stroke="#10b981"
-                name="Memory %"
-                dot={false}
-              />
-            </LineChart>
-          </ResponsiveContainer>
-        ) : (
-          <div className="h-[300px] flex items-center justify-center text-gray-500">
-            No memory metrics available
-          </div>
-        )}
-      </Card>
-
-      {/* Bandwidth Metrics */}
-      <Card className="p-6">
-        <h2 className="text-xl font-semibold mb-4">Network Bandwidth (Mbps)</h2>
-        {bandwidthData.length > 0 ? (
-          <ResponsiveContainer width="100%" height={300}>
-            <LineChart data={bandwidthData}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey="time" />
-              <YAxis />
-              <Tooltip formatter={(value: any) => `${value} Mbps`} />
-              <Legend />
-              <Line
-                type="monotone"
-                dataKey="value"
-                stroke="#f59e0b"
-                name="Bandwidth"
-                dot={false}
-              />
-            </LineChart>
-          </ResponsiveContainer>
-        ) : (
-          <div className="h-[300px] flex items-center justify-center text-gray-500">
-            No bandwidth metrics available
-          </div>
-        )}
-      </Card>
-    </div>
+      </div>
+    </section>
   );
 }
-

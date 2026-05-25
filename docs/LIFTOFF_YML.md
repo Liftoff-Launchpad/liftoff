@@ -36,8 +36,9 @@ service:
   region: nyc3                        # DO region slug
 
 build:
-  context: .                          # Docker build context (relative to repo root)
-  dockerfile: Dockerfile              # Path to Dockerfile
+  strategy: auto                      # auto (Dockerfile-first, Nixpacks fallback) | dockerfile | nixpacks
+  context: .                          # Build context (relative to repo root)
+  dockerfile_path: Dockerfile         # Path to Dockerfile (used first when present)
 
 runtime:
   instance_size: apps-s-1vcpu-0.5gb  # DO App Platform instance slug
@@ -96,8 +97,9 @@ domain:
 
 | Field | Default | Type | Description |
 |-------|---------|------|-------------|
-| `context` | `.` | string | Docker build context relative to repo root |
-| `dockerfile` | `Dockerfile` | string | Path to Dockerfile from build context |
+| `strategy` | `auto` | `auto` \| `dockerfile` \| `nixpacks` | Build strategy. `auto` tries Dockerfile first, then falls back to Nixpacks. |
+| `context` | `.` | string | Build context relative to repo root |
+| `dockerfile_path` | `Dockerfile` | string | Path to Dockerfile from build context |
 
 ---
 

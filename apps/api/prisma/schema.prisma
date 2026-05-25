@@ -170,6 +170,9 @@ model Deployment {
   commitMessage String?          @map("commit_message")
   branch        String?
   imageUri      String?          @map("image_uri")
+  buildStrategy String?          @map("build_strategy")
+  buildRunUrl   String?          @map("build_run_url")
+  buildPlan     Json?            @map("build_plan")
   triggeredBy   String?          @map("triggered_by")
   endpoint      String?
   errorMessage  String?          @map("error_message")

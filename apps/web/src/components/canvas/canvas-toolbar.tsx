@@ -1,6 +1,18 @@
 'use client';
 
-import { ChevronLeft, Circle, Code2, LayoutGrid, MoreHorizontal } from 'lucide-react';
+import {
+  Activity,
+  Bell,
+  ChevronDown,
+  Circle,
+  Code2,
+  LayoutGrid,
+  MessageSquare,
+  MoreHorizontal,
+  Plus,
+  Rocket,
+  Settings,
+} from 'lucide-react';
 import Link from 'next/link';
 import { useState } from 'react';
 import { Button } from '@/components/ui/button';
@@ -22,98 +34,117 @@ interface CanvasToolbarProps {
   nodes: Array<{ data: { status?: DeploymentStatusType } }>;
   mode: ViewMode;
   onModeChange: (mode: ViewMode) => void;
+  onAddClick: () => void;
+  activityOpen: boolean;
+  onActivityToggle: () => void;
 }
 
 function getProjectStatus(nodes: Array<{ data: { status?: DeploymentStatusType } }>): {
   label: string;
   variant: 'success' | 'warning' | 'destructive' | 'secondary';
-  icon: React.ReactNode;
 } {
-  if (nodes.length === 0) {
-    return { label: 'No Services', variant: 'secondary', icon: null };
+  if (nodes.length === 0) return { label: 'No services', variant: 'secondary' };
+  if (nodes.some((n) => n.data.status === 'FAILED')) return { label: 'Failed', variant: 'destructive' };
+  if (
+    nodes.some((n) =>
+      ['QUEUED', 'BUILDING', 'PUSHING', 'PROVISIONING', 'DEPLOYING'].includes(n.data.status ?? ''),
+    )
+  ) {
+    return { label: 'Deploying', variant: 'warning' };
   }
-
-  const hasFailed = nodes.some((n) => n.data.status === 'FAILED');
-  if (hasFailed) {
-    return { label: 'FAILED', variant: 'destructive', icon: <Circle className="h-2 w-2 fill-current" /> };
-  }
-
-  const hasActive = nodes.some(
-    (n) =>
-      n.data.status === 'QUEUED' ||
-      n.data.status === 'BUILDING' ||
-      n.data.status === 'PUSHING' ||
-      n.data.status === 'PROVISIONING' ||
-      n.data.status === 'DEPLOYING',
-  );
-  if (hasActive) {
-    return { label: 'DEPLOYING', variant: 'warning', icon: <Circle className="h-2 w-2 fill-current animate-pulse" /> };
-  }
-
-  const allSuccess = nodes.every((n) => n.data.status === 'SUCCESS');
-  if (allSuccess) {
-    return { label: 'LIVE', variant: 'success', icon: <Circle className="h-2 w-2 fill-current" /> };
-  }
-
-  return { label: 'PENDING', variant: 'secondary', icon: <Circle className="h-2 w-2 fill-current" /> };
+  if (nodes.every((n) => n.data.status === 'SUCCESS')) return { label: 'Live', variant: 'success' };
+  return { label: 'Pending', variant: 'secondary' };
 }
 
-export function CanvasToolbar({ projectId, projectName, nodes, mode, onModeChange }: CanvasToolbarProps) {
+export function CanvasToolbar({
+  projectId,
+  projectName,
+  nodes,
+  mode,
+  onModeChange,
+  onAddClick,
+  activityOpen,
+  onActivityToggle,
+}: CanvasToolbarProps): JSX.Element {
   const [menuOpen, setMenuOpen] = useState(false);
   const status = getProjectStatus(nodes);
 
   return (
-    <div className="absolute left-0 right-0 top-0 z-10 flex h-12 items-center justify-between border-b border-border bg-card/80 backdrop-blur-sm px-4">
-      <div className="flex items-center gap-3">
-        <Button variant="ghost" size="sm" asChild className="gap-1">
-          <Link href="/projects">
-            <ChevronLeft className="h-4 w-4" />
-            <span className="hidden sm:inline">Projects</span>
+    <div className="absolute inset-x-0 top-0 z-20 flex h-16 items-center justify-between border-b border-border bg-background/90 px-5 backdrop-blur-xl">
+      <div className="flex min-w-0 items-center gap-4">
+        <Link href="/projects" className="flex h-8 w-8 items-center justify-center rounded-full bg-foreground text-background">
+          <Rocket className="h-4 w-4" />
+          <span className="sr-only">Projects</span>
+        </Link>
+        <div className="h-7 w-px bg-border" />
+        <div className="flex min-w-0 items-center gap-2 text-sm">
+          <Link href={`/projects/${projectId}/canvas`} className="truncate font-semibold">
+            {projectName}
           </Link>
-        </Button>
-
-        <div className="h-4 w-px bg-border" />
-
-        <h1 className="text-sm font-semibold">{projectName}</h1>
-
+          <ChevronDown className="h-4 w-4 text-muted-foreground" />
+          <span className="text-muted-foreground">/</span>
+          <button type="button" className="inline-flex items-center gap-1 font-medium">
+            production
+            <ChevronDown className="h-4 w-4 text-muted-foreground" />
+          </button>
+        </div>
         <span
           className={cn(
-            'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase',
-            status.variant === 'success' && 'bg-emerald-500/10 text-emerald-500',
-            status.variant === 'warning' && 'bg-yellow-500/10 text-yellow-500',
-            status.variant === 'destructive' && 'bg-red-500/10 text-red-500',
-            status.variant === 'secondary' && 'bg-muted text-muted-foreground',
+            'hidden items-center gap-1.5 rounded-full border px-2 py-1 text-[11px] font-semibold uppercase sm:inline-flex',
+            status.variant === 'success' && 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400',
+            status.variant === 'warning' && 'border-amber-500/30 bg-amber-500/10 text-amber-300',
+            status.variant === 'destructive' && 'border-red-500/30 bg-red-500/10 text-red-400',
+            status.variant === 'secondary' && 'border-border bg-secondary/60 text-muted-foreground',
           )}
         >
-          {status.icon}
+          <Circle className="h-2 w-2 fill-current" />
           {status.label}
         </span>
       </div>
 
       <div className="flex items-center gap-2">
-        <div className="flex items-center rounded-lg border border-border p-0.5">
+        <div className="hidden items-center rounded-lg border border-border bg-secondary/60 p-1 md:flex">
           <button
             onClick={() => onModeChange('canvas')}
             className={cn(
-              'flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-colors',
-              mode === 'canvas' ? 'bg-accent text-accent-foreground' : 'text-muted-foreground hover:text-foreground',
+              'flex h-8 items-center gap-1.5 rounded-md px-3 text-xs font-medium transition-colors',
+              mode === 'canvas' ? 'bg-background text-foreground' : 'text-muted-foreground hover:text-foreground',
             )}
           >
-            <LayoutGrid className="h-3 w-3" />
+            <LayoutGrid className="h-3.5 w-3.5" />
             Canvas
           </button>
           <button
             onClick={() => onModeChange('dev')}
             className={cn(
-              'flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-colors',
-              mode === 'dev' ? 'bg-accent text-accent-foreground' : 'text-muted-foreground hover:text-foreground',
+              'flex h-8 items-center gap-1.5 rounded-md px-3 text-xs font-medium transition-colors',
+              mode === 'dev' ? 'bg-background text-foreground' : 'text-muted-foreground hover:text-foreground',
             )}
           >
-            <Code2 className="h-3 w-3" />
+            <Code2 className="h-3.5 w-3.5" />
             Dev
           </button>
         </div>
-
+        <Button
+          variant={activityOpen ? 'secondary' : 'ghost'}
+          size="icon"
+          title="Activity"
+          onClick={onActivityToggle}
+        >
+          <Activity className="h-4 w-4" />
+        </Button>
+        <Button variant="ghost" size="icon" title="Notifications">
+          <Bell className="h-4 w-4" />
+        </Button>
+        <div className="mx-1 h-7 w-px bg-border" />
+        <Button variant="ghost" className="hidden gap-2 sm:inline-flex">
+          <MessageSquare className="h-4 w-4" />
+          Agent
+        </Button>
+        <Button onClick={onAddClick} className="gap-2">
+          <Plus className="h-4 w-4" />
+          Add
+        </Button>
         <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
           <DropdownMenuTrigger asChild>
             <Button variant="ghost" size="icon">
@@ -122,12 +153,13 @@ export function CanvasToolbar({ projectId, projectName, nodes, mode, onModeChang
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
             <DropdownMenuItem asChild>
-              <Link href={`/projects/${projectId}/settings`}>Project Settings</Link>
+              <Link href={`/projects/${projectId}/settings`}>
+                <Settings className="mr-2 h-4 w-4" />
+                Project settings
+              </Link>
             </DropdownMenuItem>
             <DropdownMenuSeparator />
-            <DropdownMenuItem className="text-destructive">
-              Delete Project
-            </DropdownMenuItem>
+            <DropdownMenuItem className="text-destructive">Delete project</DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
       </div>

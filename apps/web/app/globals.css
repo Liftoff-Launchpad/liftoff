@@ -4,25 +4,25 @@
 
 @layer base {
   :root {
-    --background: 0 0% 100%;
-    --foreground: 222.2 84% 4.9%;
-    --card: 0 0% 100%;
-    --card-foreground: 222.2 84% 4.9%;
-    --popover: 0 0% 100%;
-    --popover-foreground: 222.2 84% 4.9%;
-    --primary: 222.2 47.4% 11.2%;
-    --primary-foreground: 210 40% 98%;
-    --secondary: 210 40% 96.1%;
-    --secondary-foreground: 222.2 47.4% 11.2%;
-    --muted: 210 40% 96.1%;
-    --muted-foreground: 215.4 16.3% 46.9%;
-    --accent: 210 40% 96.1%;
-    --accent-foreground: 222.2 47.4% 11.2%;
-    --destructive: 0 84.2% 60.2%;
-    --destructive-foreground: 210 40% 98%;
-    --border: 214.3 31.8% 91.4%;
-    --input: 214.3 31.8% 91.4%;
-    --ring: 222.2 84% 4.9%;
+    --background: 252 25% 6%;
+    --foreground: 252 16% 92%;
+    --card: 252 22% 9%;
+    --card-foreground: 252 16% 92%;
+    --popover: 252 19% 11%;
+    --popover-foreground: 252 16% 92%;
+    --primary: 268 76% 59%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 252 13% 15%;
+    --secondary-foreground: 252 16% 92%;
+    --muted: 252 12% 16%;
+    --muted-foreground: 252 8% 62%;
+    --accent: 252 14% 16%;
+    --accent-foreground: 252 16% 94%;
+    --destructive: 0 71% 55%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 252 12% 18%;
+    --input: 252 12% 18%;
+    --ring: 268 76% 59%;
     --radius: 0.5rem;
   }
 
@@ -55,6 +55,42 @@
   }
 
   body {
-    @apply bg-background text-foreground;
+    @apply bg-background text-foreground antialiased;
+    background:
+      radial-gradient(circle at 20% 20%, hsl(268 76% 32% / 0.16), transparent 28rem),
+      radial-gradient(circle at 90% 10%, hsl(22 94% 50% / 0.1), transparent 22rem),
+      hsl(var(--background));
+  }
+
+  ::selection {
+    background: hsl(var(--primary) / 0.35);
+  }
+}
+
+@layer components {
+  .liftoff-canvas {
+    background-color: hsl(var(--background));
+    background-image:
+      radial-gradient(circle, hsl(252 18% 72% / 0.18) 1px, transparent 1px),
+      linear-gradient(180deg, hsl(252 25% 8% / 0.9), hsl(252 25% 6% / 0.96));
+    background-position: 0 0, 0 0;
+    background-size: 24px 24px, 100% 100%;
+  }
+
+  .liftoff-panel {
+    border: 1px solid hsl(var(--border));
+    background: hsl(var(--card) / 0.78);
+    box-shadow: 0 24px 80px hsl(252 30% 2% / 0.4);
+    backdrop-filter: blur(18px);
+  }
+
+  .liftoff-button {
+    border: 1px solid hsl(var(--border));
+    background: hsl(var(--secondary) / 0.78);
+    color: hsl(var(--foreground));
+  }
+
+  .liftoff-button:hover {
+    background: hsl(var(--accent));
   }
 }

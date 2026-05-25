@@ -96,8 +96,20 @@ export function DrawerVariablesTab({ nodeId, canvasNodes, variables = [], onChan
   }, [editingIndex]);
 
   return (
-    <TabsContent value="variables" className="flex h-full flex-col p-0">
-      <div className="flex-1 overflow-y-auto p-4">
+    <TabsContent value="variables" className="m-0 p-10">
+      <div className="flex items-center justify-between gap-4">
+        <h4 className="text-lg font-semibold">Service Variables</h4>
+        <div className="flex items-center gap-3 text-sm text-muted-foreground">
+          <button type="button" className="hover:text-foreground">Shared Variable</button>
+          <button type="button" className="hover:text-foreground">Raw Editor</button>
+          <Button variant="outline" size="sm" onClick={handleAddVariable}>
+            <Plus className="mr-2 h-3 w-3" />
+            New Variable
+          </Button>
+        </div>
+      </div>
+
+      <div className="mt-6 border-t border-border pt-6">
         <div className="space-y-2">
           {vars.map((variable, index) => {
             const { isLinked, nodeName, varKey } = parseLinkedValue(variable.value);
@@ -171,10 +183,14 @@ export function DrawerVariablesTab({ nodeId, canvasNodes, variables = [], onChan
           })}
         </div>
 
-        <Button variant="outline" size="sm" onClick={handleAddVariable} className="mt-3 w-full">
-          <Plus className="mr-1 h-3 w-3" />
-          Add Variable
-        </Button>
+        {vars.length === 0 && (
+          <div className="flex min-h-44 items-center justify-center rounded-lg border border-dashed border-border bg-background/35 text-center">
+            <div>
+              <p className="font-medium text-muted-foreground">No Environment Variables</p>
+              <p className="mt-2 text-sm text-muted-foreground">Import all variables using the Raw Editor.</p>
+            </div>
+          </div>
+        )}
       </div>
     </TabsContent>
   );

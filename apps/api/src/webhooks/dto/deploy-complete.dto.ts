@@ -40,4 +40,23 @@ export class DeployCompleteDto {
   @IsOptional()
   @IsUrl()
   public runUrl?: string;
+
+  @ApiProperty({
+    example: 'dockerfile',
+    description: 'Build strategy selected by the workflow',
+    required: false,
+  })
+  @IsString()
+  @IsOptional()
+  @Matches(/^(dockerfile|nixpacks)$/i)
+  public buildStrategy?: string;
+
+  @ApiProperty({
+    description: 'Optional compact Nixpacks plan payload as JSON string',
+    required: false,
+  })
+  @IsString()
+  @IsOptional()
+  @MaxLength(20000)
+  public buildPlan?: string;
 }

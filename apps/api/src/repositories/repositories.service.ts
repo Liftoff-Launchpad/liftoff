@@ -198,6 +198,7 @@ export class RepositoriesService implements OnModuleInit {
         branch: dto.branch,
         imageRepository: `${project.name}/${targetEnvironment.name}`,
         liftoffApiUrl: this.getWebhookBaseUrl(),
+        buildStrategy: this.resolveBuildStrategy(targetEnvironment.configParsed),
         dockerfilePath: this.resolveDockerfilePath(targetEnvironment.configParsed),
         dockerBuildContext: this.resolveDockerBuildContext(targetEnvironment.configParsed),
         doToken,
@@ -422,6 +423,19 @@ export class RepositoriesService implements OnModuleInit {
     }
 
     return parsedConfig.data.build.context;
+  }
+
+  private resolveBuildStrategy(configParsed: unknown): 'auto' | 'dockerfile' | 'nixpacks' {
+    if (!configParsed) {
+      return 'auto';
+    }
+
+    const parsedConfig = safeParseLiftoffConfig(configParsed);
+    if (!parsedConfig.success) {
+      return 'auto';
+    }
+
+    return parsedConfig.data.build.strategy;
   }
 
   private async syncWebhookUrlsOnBoot(): Promise<void> {

@@ -67,7 +67,7 @@ export function DrawerMetricsTab({ environmentId }: DrawerMetricsTabProps) {
 
   if (loading) {
     return (
-      <TabsContent value="metrics" className="flex h-full items-center justify-center p-4">
+      <TabsContent value="metrics" className="m-0 flex h-full items-center justify-center p-10">
         <Spinner className="h-6 w-6" />
       </TabsContent>
     );
@@ -75,34 +75,53 @@ export function DrawerMetricsTab({ environmentId }: DrawerMetricsTabProps) {
 
   if (error) {
     return (
-      <TabsContent value="metrics" className="p-4">
+      <TabsContent value="metrics" className="m-0 p-10">
         <p className="text-sm text-muted-foreground">Deploy first to see metrics.</p>
       </TabsContent>
     );
   }
 
   return (
-    <TabsContent value="metrics" className="flex h-full flex-col gap-6 p-4">
-      <MetricChart label="CPU" data={cpu} max={100} unit="%" color="#8b5cf6" />
-      <MetricChart label="Memory" data={memory} max={100} unit="%" color="#3b82f6" />
-      <MetricChart label="Network" data={network} max={100} unit="MB/s" color="#10b981" />
+    <TabsContent value="metrics" className="m-0 p-10">
+      <div className="mb-8 flex items-center justify-between">
+        <div className="inline-flex overflow-hidden rounded-lg border border-border">
+          {['1h', '6h', '1d', '7d', '30d'].map((range) => (
+            <button
+              key={range}
+              type="button"
+              className="border-r border-border px-4 py-2 text-sm text-muted-foreground last:border-r-0 first:text-primary"
+            >
+              {range}
+            </button>
+          ))}
+        </div>
+        <div className="inline-flex overflow-hidden rounded-lg border border-border">
+          <button type="button" className="bg-secondary px-3 py-2 text-primary">Lines</button>
+          <button type="button" className="px-3 py-2 text-muted-foreground">Grid</button>
+        </div>
+      </div>
+      <div className="space-y-5">
+        <MetricChart label="CPU" data={cpu} max={100} unit="%" color="#8b5cf6" ceiling="Max 1 vCPU" />
+        <MetricChart label="Memory" data={memory} max={100} unit="%" color="#6f8cff" ceiling="Max 0.5 GB" />
+        <MetricChart label="Network" data={network} max={100} unit="MB/s" color="#10b981" ceiling="Max 1 GB/s" />
+      </div>
     </TabsContent>
   );
 }
 
-function MetricChart({ label, data, max, unit, color }: { label: string; data: number[]; max: number; unit: string; color: string }) {
+function MetricChart({ label, data, max, unit, color, ceiling }: { label: string; data: number[]; max: number; unit: string; color: string; ceiling: string }) {
   const latestValue = data[data.length - 1] ?? 0;
   const safeData = data.length < 2 ? [0, ...data] : data;
 
   return (
-    <div className="space-y-2">
+    <div className="rounded-lg border border-border bg-background/25 p-5">
       <div className="flex items-center justify-between">
-        <span className="text-sm font-medium">{label}</span>
+        <span className="text-lg font-semibold">{label}</span>
         <span className="text-xs text-muted-foreground font-mono">
-          {latestValue.toFixed(1)}{unit}
+          {ceiling} · {latestValue.toFixed(1)}{unit}
         </span>
       </div>
-      <div className="h-16 w-full overflow-hidden rounded-lg bg-accent/30 p-1">
+      <div className="mt-5 h-48 w-full overflow-hidden rounded-lg bg-card/40 p-1">
         <svg viewBox="0 0 100 50" className="h-full w-full" preserveAspectRatio="none">
           <defs>
             <linearGradient id={`gradient-${label}`} x1="0" y1="0" x2="0" y2="1">

@@ -1,6 +1,6 @@
 'use client';
 
-import { X } from 'lucide-react';
+import { Globe2, MapPin, Rocket, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { cn } from '@/lib/utils';
@@ -10,42 +10,111 @@ interface ConfigDrawerProps {
   onClose: () => void;
   nodeLabel?: string;
   nodeId?: string;
+  status?: string;
+  repoName?: string;
+  region?: string;
+  replicas?: number;
   children: React.ReactNode;
 }
 
-export function ConfigDrawer({ open, onClose, nodeLabel, nodeId, children }: ConfigDrawerProps) {
+export function ConfigDrawer({
+  open,
+  onClose,
+  nodeLabel,
+  nodeId,
+  status = 'PENDING',
+  repoName,
+  region,
+  replicas = 1,
+  children,
+}: ConfigDrawerProps) {
+  const displayName = nodeLabel ?? 'Node Settings';
+  const hasActiveDeployment = status === 'SUCCESS';
+
   return (
     <div
       className={cn(
-        'absolute right-0 top-12 z-20 h-[calc(100%-3rem)] w-[420px] overflow-hidden border-l border-border bg-card shadow-xl transition-transform duration-300',
+        'absolute bottom-0 right-0 top-16 z-20 w-[min(1120px,52vw)] min-w-[560px] overflow-hidden border-l border-border bg-card shadow-[0_24px_80px_hsl(252_30%_2%/0.48)] transition-transform duration-300',
         open ? 'translate-x-0' : 'translate-x-full',
       )}
     >
-      <div className="flex items-center justify-between border-b border-border px-4 py-3">
-        <div>
-          <h3 className="font-semibold">{nodeLabel ?? 'Node Settings'}</h3>
-          {nodeId && <p className="text-xs text-muted-foreground font-mono">{nodeId.slice(0, 12)}...</p>}
+      <div className="border-b border-border px-10 pt-8">
+        <div className="flex items-start justify-between gap-6">
+          <div className="flex min-w-0 items-center gap-4">
+            <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-foreground text-background">
+              <Rocket className="h-5 w-5" />
+            </span>
+            <div className="min-w-0">
+              <h3 className="truncate text-2xl font-semibold tracking-normal">{displayName}</h3>
+              {nodeId && <p className="mt-1 font-mono text-xs text-muted-foreground">{nodeId.slice(0, 12)}...</p>}
+            </div>
+          </div>
+          <Button variant="ghost" size="icon" onClick={onClose} className="shrink-0 text-muted-foreground hover:text-foreground">
+            <X className="h-4 w-4" />
+          </Button>
         </div>
-        <Button variant="ghost" size="icon" onClick={onClose} className="shrink-0">
-          <X className="h-4 w-4" />
-        </Button>
+
+        <Tabs defaultValue="deployments" className="mt-7 flex h-[calc(100vh-10rem)] flex-col">
+          <TabsList className="h-auto w-full justify-start gap-8 rounded-none border-0 bg-transparent p-0">
+            <TabsTrigger
+              value="deployments"
+              className="rounded-none border-b-2 border-transparent bg-transparent px-0 pb-3 pt-0 text-base text-muted-foreground shadow-none data-[state=active]:border-foreground data-[state=active]:bg-transparent data-[state=active]:text-foreground data-[state=active]:shadow-none"
+            >
+              Deployments
+            </TabsTrigger>
+            <TabsTrigger
+              value="variables"
+              className="rounded-none border-b-2 border-transparent bg-transparent px-0 pb-3 pt-0 text-base text-muted-foreground shadow-none data-[state=active]:border-foreground data-[state=active]:bg-transparent data-[state=active]:text-foreground data-[state=active]:shadow-none"
+            >
+              Variables
+            </TabsTrigger>
+            <TabsTrigger
+              value="metrics"
+              className="rounded-none border-b-2 border-transparent bg-transparent px-0 pb-3 pt-0 text-base text-muted-foreground shadow-none data-[state=active]:border-foreground data-[state=active]:bg-transparent data-[state=active]:text-foreground data-[state=active]:shadow-none"
+            >
+              Metrics
+            </TabsTrigger>
+            <TabsTrigger
+              value="settings"
+              className="rounded-none border-b-2 border-transparent bg-transparent px-0 pb-3 pt-0 text-base text-muted-foreground shadow-none data-[state=active]:border-foreground data-[state=active]:bg-transparent data-[state=active]:text-foreground data-[state=active]:shadow-none"
+            >
+              Settings
+            </TabsTrigger>
+          </TabsList>
+
+          <div className="-mx-10 flex-1 overflow-y-auto border-t border-border">
+            <TabsContent value="deployments" className="m-0 p-10">
+              <div className="flex items-center justify-between text-sm text-muted-foreground">
+                <div className="flex items-center gap-2">
+                  <Globe2 className="h-4 w-4" />
+                  <span>{hasActiveDeployment ? 'Public service' : 'Unexposed service'}</span>
+                </div>
+                <div className="flex items-center gap-5">
+                  <span className="inline-flex items-center gap-2">
+                    <MapPin className="h-4 w-4" />
+                    {region || 'US East'}
+                  </span>
+                  <span>{replicas} Replica{replicas === 1 ? '' : 's'}</span>
+                </div>
+              </div>
+
+              <div className="mt-5 flex min-h-28 items-center justify-center rounded-lg border border-dashed border-border bg-background/35 px-8 text-center">
+                <div>
+                  <p className="text-sm text-muted-foreground">
+                    {hasActiveDeployment ? 'Latest deployment is active for this service.' : 'There is no active deployment for this service.'}
+                  </p>
+                  <Button variant="link" className="mt-2 h-auto px-0 text-primary">
+                    <Rocket className="mr-2 h-4 w-4" />
+                    Deploy {repoName ? `the repo ${repoName}` : displayName}
+                  </Button>
+                </div>
+              </div>
+            </TabsContent>
+
+            {children}
+          </div>
+        </Tabs>
       </div>
-
-      <Tabs defaultValue="metrics" className="flex h-full flex-col">
-        <TabsList className="w-full justify-start rounded-none border-b border-border bg-transparent p-0">
-          <TabsTrigger value="metrics" className="flex-1 rounded-none data-[state=active]:bg-accent/50">
-            Metrics
-          </TabsTrigger>
-          <TabsTrigger value="variables" className="flex-1 rounded-none data-[state=active]:bg-accent/50">
-            Variables
-          </TabsTrigger>
-          <TabsTrigger value="settings" className="flex-1 rounded-none data-[state=active]:bg-accent/50">
-            Settings
-          </TabsTrigger>
-        </TabsList>
-
-        <div className="flex-1 overflow-y-auto">{children}</div>
-      </Tabs>
     </div>
   );
 }

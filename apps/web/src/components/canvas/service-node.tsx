@@ -2,7 +2,7 @@
 
 import { memo } from 'react';
 import { Handle, Position, type NodeProps } from '@xyflow/react';
-import { ExternalLink, GitBranch, Globe } from 'lucide-react';
+import { ExternalLink, GitBranch, Globe, Rocket } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { type DeploymentStatusType } from '@liftoff/shared';
 
@@ -20,6 +20,8 @@ interface ServiceNodeData {
   gitBranch?: string;
   commitSha?: string;
   repoName?: string;
+  buildStrategy?: string;
+  runtimeSummary?: string;
 }
 
 const STATUS_CONFIG: Record<string, { border: string; dot: string; animate?: string; label: string }> = {
@@ -51,9 +53,9 @@ function ServiceNodeComponent({ data, selected }: NodeProps) {
   return (
     <div
       className={cn(
-        'relative w-64 rounded-xl border-2 bg-card shadow-lg transition-all duration-200',
-        'hover:shadow-xl',
-        cfg.border,
+        'relative w-80 rounded-lg border bg-card/95 shadow-[0_20px_60px_hsl(252_30%_2%/0.32)] transition-all duration-200',
+        'hover:border-primary/50',
+        d.isStaged ? 'border-amber-400/70' : 'border-border',
         selected && 'ring-2 ring-primary/50 ring-offset-2 ring-offset-background',
       )}
     >
@@ -63,26 +65,24 @@ function ServiceNodeComponent({ data, selected }: NodeProps) {
         className="!w-3 !h-3 !border-2 !border-background !bg-muted-foreground"
       />
 
-      <div className="flex items-center justify-between px-3 py-2.5 rounded-t-[10px] border-b border-border bg-accent/30">
-        <div className="flex items-center gap-2">
-          <div className={cn('h-2.5 w-2.5 rounded-full', cfg.dot, cfg.animate)} />
-          <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-            Web Service
+      <div className="flex items-center justify-between px-4 py-4">
+        <div className="flex min-w-0 items-center gap-3">
+          <span className="flex h-8 w-8 items-center justify-center rounded-full bg-foreground text-background">
+            <Rocket className="h-4 w-4" />
           </span>
+          <div className="min-w-0">
+            <p className="truncate text-base font-semibold">{d.label}</p>
+            <p className="text-xs text-muted-foreground">Web Service</p>
+          </div>
         </div>
-        <span className={cn(
-          'text-[10px] font-semibold uppercase',
-          statusKey === 'SUCCESS' && 'text-emerald-500',
-          statusKey === 'FAILED' && 'text-red-500',
-          (statusKey === 'BUILDING' || statusKey === 'DEPLOYING' || statusKey === 'QUEUED') && 'text-blue-400',
-          statusKey === 'STAGED' && 'text-amber-400',
-        )}>
-          {cfg.label}
-        </span>
+        <span className={cn('h-2.5 w-2.5 rounded-full', cfg.dot, cfg.animate)} />
       </div>
 
-      <div className="px-3 py-3 space-y-2">
-        <p className="text-sm font-semibold truncate">{d.label}</p>
+      <div className="border-t border-border px-4 py-4 space-y-2">
+        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+          <div className={cn('h-2.5 w-2.5 rounded-full', cfg.dot, cfg.animate)} />
+          <span>{cfg.label === 'Live' ? 'Service is online' : `Service is ${cfg.label.toLowerCase()}`}</span>
+        </div>
 
         {d.repoName && (
           <div className="flex items-center gap-1 text-xs text-muted-foreground">
@@ -99,9 +99,24 @@ function ServiceNodeComponent({ data, selected }: NodeProps) {
             {d.imageUri.split('/').pop()?.slice(0, 24) ?? ''}
           </p>
         )}
+
+        {(d.buildStrategy || d.runtimeSummary) && (
+          <div className="rounded-md border border-border/60 bg-background/40 px-2 py-1.5 text-[10px] text-muted-foreground">
+            {d.buildStrategy && (
+              <p className="truncate">
+                <span className="text-foreground/90">Build:</span> {d.buildStrategy}
+              </p>
+            )}
+            {d.runtimeSummary && (
+              <p className="truncate">
+                <span className="text-foreground/90">Runtime:</span> {d.runtimeSummary}
+              </p>
+            )}
+          </div>
+        )}
       </div>
 
-      <div className="px-3 py-2.5 space-y-1.5 border-t border-border">
+      <div className="px-4 py-3 space-y-1.5 border-t border-border bg-background/30">
         {d.endpoint && (
           <a
             href={d.endpoint}

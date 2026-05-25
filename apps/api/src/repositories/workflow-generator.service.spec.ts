@@ -23,6 +23,7 @@ describe('WorkflowGeneratorService', () => {
       branch: 'main',
       imageRepository: 'my-app/production',
       liftoffApiUrl: 'https://liftoff.example.com/',
+      buildStrategy: 'auto',
       dockerfilePath: './deploy/Dockerfile',
       dockerBuildContext: './apps/web',
       doToken: 'dop_v1_token',
@@ -35,11 +36,14 @@ describe('WorkflowGeneratorService', () => {
     );
     expect(workflow).toContain("branches: ['main']");
     expect(workflow).toContain('digitalocean/action-doctl@v2');
-    expect(workflow).toContain(
-      'registry.digitalocean.com/user-registry/my-app/production:$IMAGE_TAG',
-    );
-    expect(workflow).toContain('-f ./deploy/Dockerfile');
-    expect(workflow).toContain('./apps/web');
+    expect(workflow).toContain('IMAGE_URI: registry.digitalocean.com/user-registry/my-app/production:${{ github.sha }}');
+    expect(workflow).toContain('CONFIGURED_BUILD_STRATEGY: auto');
+    expect(workflow).toContain('CONFIGURED_DOCKERFILE_PATH: ./deploy/Dockerfile');
+    expect(workflow).toContain('CONFIGURED_DOCKER_CONTEXT: ./apps/web');
+    expect(workflow).toContain('if [ -f "./Dockerfile" ]');
+    expect(workflow).toContain('nixpacks build "$CONFIGURED_DOCKER_CONTEXT" --name "$IMAGE_URI"');
+    expect(workflow).toContain('buildStrategy');
+    expect(workflow).toContain('buildPlan');
     expect(workflow).toContain('https://liftoff.example.com/api/v1/webhooks/deploy-complete');
     expect(workflow).toContain('secrets.LIFTOFF_DEPLOY_SECRET');
   });

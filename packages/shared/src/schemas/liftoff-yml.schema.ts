@@ -71,6 +71,7 @@ const DomainSchema = z.object({
 });
 
 const BuildSchema = z.object({
+  strategy: z.enum(['auto', 'dockerfile', 'nixpacks']).default('auto'),
   dockerfile_path: z.string().min(1).default('Dockerfile'),
   context: z.string().min(1).default('.'),
 });

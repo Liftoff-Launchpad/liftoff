@@ -24,6 +24,7 @@ interface ResolvedApp {
   databaseSize: string;
   databaseVersion: string;
   storageEnabled: boolean;
+  buildStrategy: 'auto' | 'dockerfile' | 'nixpacks';
   dockerfilePath: string;
   buildContext: string;
 }
@@ -156,6 +157,7 @@ export class PipelineCompilerService {
       databaseSize: 'db-s-1vcpu-1gb',
       databaseVersion: '15',
       storageEnabled: false,
+      buildStrategy: 'auto',
       dockerfilePath: 'Dockerfile',
       buildContext: '.',
     };
@@ -203,11 +205,13 @@ export class PipelineCompilerService {
         }
 
         case 'DockerBuild':
+          resolved.buildStrategy = 'dockerfile';
           if (source.data['dockerfilePath']) resolved.dockerfilePath = source.data['dockerfilePath'] as string;
           if (source.data['context']) resolved.buildContext = source.data['context'] as string;
           break;
 
         case 'AutoDetectBuild':
+          resolved.buildStrategy = 'auto';
           break;
       }
     }
@@ -229,6 +233,7 @@ export class PipelineCompilerService {
         port: app.port,
       },
       build: {
+        strategy: app.buildStrategy,
         dockerfile_path: app.dockerfilePath,
         context: app.buildContext,
       },

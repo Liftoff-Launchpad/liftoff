@@ -5,7 +5,7 @@ import { useParams, useRouter } from 'next/navigation';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
-import { ArrowUpRight, Trash2 } from 'lucide-react';
+import { ArrowUpRight, Bell, FileText, Gauge, Layers3, Rocket, Settings, Trash2 } from 'lucide-react';
 import Link from 'next/link';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -24,6 +24,7 @@ import { Spinner } from '@/components/ui/spinner';
 import { toast } from '@/components/ui/use-toast';
 import { useProject, useUpdateProject, useDeleteProject } from '@/hooks/queries/use-projects';
 import { useConnectedRepo } from '@/hooks/queries/use-repositories';
+import { cn } from '@/lib/utils';
 
 const projectSettingsSchema = z.object({
   name: z.string().min(1, 'Project name is required').max(100, 'Maximum 100 characters'),
@@ -99,15 +100,57 @@ export default function ProjectSettingsPage(): JSX.Element {
   const canDelete = deleteConfirmName === project.name;
 
   return (
-    <section className="space-y-6 p-6">
-      <div className="space-y-2">
-        <h2 className="text-2xl font-semibold tracking-tight">Project Settings</h2>
-        <p className="text-sm text-muted-foreground">
-          Manage general settings for <span className="font-medium text-foreground">{project.name}</span>.
-        </p>
-      </div>
+    <section className="min-h-full p-0">
+      <div className="mx-auto flex min-h-full max-w-[1800px] flex-col px-6 py-5">
+        <div className="liftoff-panel min-h-[calc(100vh-40px)] overflow-hidden rounded-lg">
+          <header className="flex h-28 items-center justify-between border-b border-border px-8">
+            <div>
+              <p className="text-xs font-medium uppercase tracking-[0.24em] text-primary">Launch settings</p>
+              <h2 className="mt-2 text-3xl font-semibold tracking-tight">Project Settings</h2>
+            </div>
+            <div className="flex items-center gap-3 text-muted-foreground">
+              <Bell className="h-4 w-4" />
+              <Link href={`/projects/${projectId}/canvas`} className="inline-flex items-center gap-2 rounded-md border border-border px-3 py-2 text-sm text-foreground hover:bg-secondary">
+                <Rocket className="h-4 w-4" />
+                Canvas
+              </Link>
+            </div>
+          </header>
 
-      <Card>
+          <div className="grid grid-cols-[220px_minmax(0,1fr)] gap-10 px-8 py-10">
+            <nav className="space-y-2 text-sm">
+              {[
+                { label: 'General', icon: Settings, active: true },
+                { label: 'Usage', icon: Gauge },
+                { label: 'Environments', icon: Layers3 },
+                { label: 'Logs', icon: FileText },
+              ].map((item) => {
+                const Icon = item.icon;
+                return (
+                  <button
+                    key={item.label}
+                    type="button"
+                    className={cn(
+                      'flex w-full items-center gap-3 rounded-md px-3 py-2.5 text-left',
+                      item.active ? 'text-foreground' : 'text-muted-foreground hover:bg-secondary hover:text-foreground',
+                    )}
+                  >
+                    <Icon className={cn('h-4 w-4', item.active && 'text-primary')} />
+                    {item.label}
+                  </button>
+                );
+              })}
+            </nav>
+
+            <div className="max-w-4xl space-y-8">
+              <div>
+                <h3 className="text-2xl font-semibold">Project Info</h3>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  Manage general settings for <span className="font-medium text-foreground">{project.name}</span>.
+                </p>
+              </div>
+
+      <Card className="border-border bg-background/30 shadow-none">
         <CardHeader>
           <CardTitle>General</CardTitle>
           <CardDescription>Update your project name and description.</CardDescription>
@@ -135,7 +178,7 @@ export default function ProjectSettingsPage(): JSX.Element {
         </CardContent>
       </Card>
 
-      <Card>
+      <Card className="border-border bg-background/30 shadow-none">
         <CardHeader>
           <CardTitle>Repository</CardTitle>
           <CardDescription>The GitHub repository connected to this project.</CardDescription>
@@ -165,7 +208,7 @@ export default function ProjectSettingsPage(): JSX.Element {
         </CardContent>
       </Card>
 
-      <Card>
+      <Card className="border-border bg-background/30 shadow-none">
         <CardHeader>
           <CardTitle>Environments</CardTitle>
           <CardDescription>Environments provisioned for this project.</CardDescription>
@@ -189,7 +232,7 @@ export default function ProjectSettingsPage(): JSX.Element {
         </CardContent>
       </Card>
 
-      <Card className="border-destructive/50">
+      <Card className="border-destructive/50 bg-background/30 shadow-none">
         <CardHeader>
           <CardTitle className="text-destructive">Danger Zone</CardTitle>
           <CardDescription>
@@ -232,6 +275,10 @@ export default function ProjectSettingsPage(): JSX.Element {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+            </div>
+          </div>
+        </div>
+      </div>
     </section>
   );
 }

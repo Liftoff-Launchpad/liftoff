@@ -22,6 +22,9 @@ export interface DeploymentRecord {
   commitMessage: string | null;
   branch: string | null;
   imageUri: string | null;
+  buildStrategy: string | null;
+  buildRunUrl: string | null;
+  buildPlan: unknown | null;
   triggeredBy: string | null;
   endpoint: string | null;
   errorMessage: string | null;

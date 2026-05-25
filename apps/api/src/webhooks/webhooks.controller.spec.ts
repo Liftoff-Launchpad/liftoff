@@ -45,10 +45,15 @@ describe('WebhooksController', () => {
 
   it('handleDeployComplete delegates DTO payload and secret header', async () => {
     webhooksServiceMock.handleDeployComplete.mockResolvedValue(undefined);
-    const dto: DeployCompleteDto = {
+    const dto = {
       environmentId: 'env-1',
       imageUri: 'registry.digitalocean.com/liftoff/my-app/production:abc123',
       commitSha: 'abc123',
+      buildStrategy: 'nixpacks',
+      buildPlan: '{"provider":"nixpacks","phases":["setup","build"]}',
+    } as DeployCompleteDto & {
+      buildStrategy: string;
+      buildPlan: string;
     };
 
     await controller.handleDeployComplete('deploy-secret', dto);
@@ -58,6 +63,8 @@ describe('WebhooksController', () => {
         environmentId: 'env-1',
         imageUri: 'registry.digitalocean.com/liftoff/my-app/production:abc123',
         commitSha: 'abc123',
+        buildStrategy: 'nixpacks',
+        buildPlan: '{"provider":"nixpacks","phases":["setup","build"]}',
       },
       'deploy-secret',
     );
