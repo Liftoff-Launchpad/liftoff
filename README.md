@@ -87,6 +87,9 @@ Complete containerized setup with hot-reloading — no need to install Node.js, 
 # 1. Clone and start everything with Docker
 git clone https://github.com/YOUR_ORG/liftoff.git && cd liftoff
 
+# 1.5 Export ngrok token (required for reserved domain tunnel)
+export NGROK_AUTHTOKEN=your_ngrok_authtoken
+
 # 2. Build and start all services (PostgreSQL, Redis, API, Web)
 docker compose build
 docker compose up -d

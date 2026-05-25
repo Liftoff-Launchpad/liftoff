@@ -27,6 +27,17 @@ services:
       test: ['CMD', 'redis-cli', 'ping']
       interval: 5s
 
+  ngrok:
+    image: ngrok/ngrok:latest
+    container_name: liftoff_ngrok
+    command: ['http', '--domain=aniya-preservable-harriett.ngrok-free.dev', 'api:4000']
+    environment:
+      - NGROK_AUTHTOKEN=${NGROK_AUTHTOKEN}
+    ports:
+      - '4040:4040'
+    depends_on:
+      - api
+
   api:
     build:
       context: .
@@ -47,6 +58,7 @@ services:
     environment:
       - DATABASE_URL=postgresql://liftoff:liftoff@postgres:5432/liftoff
       - REDIS_URL=redis://redis:6379
+      - WEBHOOK_BASE_URL=https://aniya-preservable-harriett.ngrok-free.dev
     depends_on:
       postgres:
         condition: service_healthy
