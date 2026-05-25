@@ -5,7 +5,7 @@ FROM node:20-alpine AS base
 RUN npm install -g pnpm@9
 RUN apk add --no-cache openssl curl bash
 RUN curl -fsSL https://get.pulumi.com | sh
-RUN cp /root/.pulumi/bin/pulumi /usr/local/bin/pulumi
+RUN cp /root/.pulumi/bin/* /usr/local/bin/
 
 WORKDIR /app
 COPY pnpm-workspace.yaml package.json pnpm-lock.yaml ./
