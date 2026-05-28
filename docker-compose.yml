@@ -55,6 +55,12 @@ services:
       - ./apps/api/prisma:/app/apps/api/prisma
       - ./packages/shared/src:/app/packages/shared/src
       - ./packages/config:/app/packages/config
+      # The infra runner spawns Pulumi as a subprocess and ts-node-compiles the
+      # stack file fresh on every run, so the source must be live-mounted —
+      # otherwise the container holds whatever was baked in at image-build time
+      # and shape changes (e.g. the multi-service migration) cause Pulumi to
+      # fail with TS2352 mismatches between the runner's args and the stale stack.
+      - ./packages/pulumi-components/src:/app/packages/pulumi-components/src
       - api_node_modules:/app/node_modules
       - api_apps_node_modules:/app/apps/api/node_modules
     env_file:
