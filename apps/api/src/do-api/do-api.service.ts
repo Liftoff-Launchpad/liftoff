@@ -279,23 +279,34 @@ export class DoApiService {
 
   /**
    * Fetches app runtime logs (live application logs, not deployment logs).
+   *
+   * When `componentName` is given, DO scopes the log feed to that App spec
+   * component (one `services[]` entry) via the `component_name` query param
+   * on the app-wide logs endpoint. Returns [] on 404 — that's what DO returns
+   * when the component name doesn't match anything in the current App spec,
+   * which happens when:
+   *   - the env has been re-provisioned with a different component name
+   *   - the service was added in the DB but not yet deployed
+   *   - logs for that type haven't started rolling yet
+   * Either way, [] is the right user-facing answer; no need to spam the logger.
    */
   public async getAppRuntimeLogs(
     doToken: string,
     appId: string,
     logType: 'BUILD' | 'DEPLOY' | 'RUN' | 'RUN_RESTARTED' = 'RUN',
     doAccountId?: string,
+    componentName?: string,
   ): Promise<string[]> {
     try {
       const { data } = await this.executeRequest(
         firstValueFrom(
-          this.httpService.get<unknown>(
-            `${DoApiService.BASE_URL}/v2/apps/${appId}/logs`,
-            {
-              headers: this.getHeaders(doToken),
-              params: { type: logType },
+          this.httpService.get<unknown>(`${DoApiService.BASE_URL}/v2/apps/${appId}/logs`, {
+            headers: this.getHeaders(doToken),
+            params: {
+              type: logType,
+              ...(componentName ? { component_name: componentName } : {}),
             },
-          ),
+          }),
         ),
         doAccountId,
       );
@@ -310,13 +321,18 @@ export class DoApiService {
 
       return [JSON.stringify(data)];
     } catch (error) {
-      this.logger.warn(`Failed to fetch app runtime logs: ${this.resolveErrorMessage(error)}`);
+      // 404 = no logs / unknown component / no live tail. Stay quiet so the
+      // 5s poll loop in `getLiveAppLogs` doesn't flood the logger.
+      if (this.resolveStatus(error) !== 404) {
+        this.logger.warn(`Failed to fetch app runtime logs: ${this.resolveErrorMessage(error)}`);
+      }
       return [];
     }
   }
 
   /**
    * Polls app runtime logs with optional follow mode (returns only new lines).
+   * `componentName` scopes the feed to a single App spec component.
    */
   public async *getLiveAppLogs(
     doToken: string,
@@ -324,12 +340,19 @@ export class DoApiService {
     logType: 'BUILD' | 'DEPLOY' | 'RUN' | 'RUN_RESTARTED' = 'RUN',
     pollIntervalMs: number = 5000,
     doAccountId?: string,
+    componentName?: string,
   ): AsyncGenerator<string> {
     let lastLogCount = 0;
 
     while (true) {
       try {
-        const logs = await this.getAppRuntimeLogs(doToken, appId, logType, doAccountId);
+        const logs = await this.getAppRuntimeLogs(
+          doToken,
+          appId,
+          logType,
+          doAccountId,
+          componentName,
+        );
         const newLogs = logs.slice(lastLogCount);
 
         for (const line of newLogs) {

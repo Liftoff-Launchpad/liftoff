@@ -35,6 +35,12 @@ interface HttpLogEntry {
 
 interface LiveAppLogsProps {
   environmentId: string;
+  /**
+   * Optional. Scopes the feed to a single App Platform component (one
+   * `services[]` entry) via DO's `/v2/apps/:id/components/:name/logs` endpoint.
+   * Omit for env-wide logs (all services interleaved).
+   */
+  serviceName?: string;
   /** Optional initial log type. Defaults to RUN (app's stdout/stderr). */
   defaultLogType?: LogType;
   /** Max lines to retain in memory. Older lines drop off the top when exceeded. */
@@ -57,6 +63,7 @@ const DEFAULT_BUFFER_LIMIT = 5000;
  */
 export function LiveAppLogs({
   environmentId,
+  serviceName,
   defaultLogType = 'RUN',
   bufferLimit = DEFAULT_BUFFER_LIMIT,
   className,
@@ -83,8 +90,9 @@ export function LiveAppLogs({
   }, [bufferLimit]);
 
   // ─────────────────────────── initial backfill ───────────────────────────
-  // HTTP-fetch the last N lines whenever envId or logType changes. Resets the
-  // buffer so switching from RUN → BUILD shows only the new feed.
+  // HTTP-fetch the last N lines whenever envId, logType, or serviceName changes.
+  // Resets the buffer so switching scope (e.g. env → "api" service) shows only
+  // the new feed instead of mixing.
   useEffect(() => {
     let cancelled = false;
     setLogs([]);
@@ -94,7 +102,11 @@ export function LiveAppLogs({
 
     apiClient
       .get<HttpLogEntry[]>(`/environments/${environmentId}/logs`, {
-        params: { type: logType, limit: 200 },
+        params: {
+          type: logType,
+          limit: 200,
+          ...(serviceName ? { service: serviceName } : {}),
+        },
       })
       .then((response) => {
         if (cancelled) return;
@@ -123,7 +135,7 @@ export function LiveAppLogs({
     return () => {
       cancelled = true;
     };
-  }, [environmentId, logType]);
+  }, [environmentId, logType, serviceName]);
 
   // ─────────────────────────── live stream ───────────────────────────
   // Listen for `log-line` events on the singleton /deployments socket. We
@@ -167,14 +179,19 @@ export function LiveAppLogs({
     // Kick off the server-side stream. The gateway handler runs an async generator
     // that polls DO; it stops cleanly when we leave (socket emits `disconnect` on
     // page navigation, which the server listens for and closes the generator).
-    socket.emit('start:log-stream', { environmentId });
+    // When serviceName is set, the server scopes the stream to that App Platform
+    // component; otherwise env-wide.
+    socket.emit('start:log-stream', {
+      environmentId,
+      ...(serviceName ? { serviceName } : {}),
+    });
 
     return () => {
       socket.off('log-line', handleLogLine);
       socket.off('connect', handleConnect);
       socket.off('disconnect', handleDisconnect);
     };
-  }, [accessToken, environmentId]);
+  }, [accessToken, environmentId, serviceName]);
 
   const visibleLogs = useMemo(() => {
     if (!filter.trim()) return logs;

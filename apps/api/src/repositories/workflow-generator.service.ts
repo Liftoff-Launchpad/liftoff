@@ -96,6 +96,9 @@ export class WorkflowGeneratorService {
 on:
   push:
     branches: ['${branch}']
+  # Allows POST /api/v1/.../build to trigger a fresh build without a code push.
+  # The API hits GitHub's workflows/{file}/dispatches endpoint with this branch.
+  workflow_dispatch:
 
 jobs:
   build-and-deploy:

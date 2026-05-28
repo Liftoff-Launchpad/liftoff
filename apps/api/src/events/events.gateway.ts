@@ -113,7 +113,7 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
   @SubscribeMessage('start:log-stream')
   public async startLogStream(
     @ConnectedSocket() client: Socket,
-    @MessageBody() payload: { environmentId: string },
+    @MessageBody() payload: { environmentId: string; serviceName?: string },
   ): Promise<void> {
     const userId = client.data.userId as string;
 
@@ -123,7 +123,12 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
     }
 
     try {
-      await this.monitoringService.streamLogs(payload.environmentId, userId, client);
+      await this.monitoringService.streamLogs(
+        payload.environmentId,
+        userId,
+        client,
+        payload.serviceName,
+      );
     } catch (error) {
       this.logger.warn(
         `Failed to stream logs for environment ${payload.environmentId}: ${

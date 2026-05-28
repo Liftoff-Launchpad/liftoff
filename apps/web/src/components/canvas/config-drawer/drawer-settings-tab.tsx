@@ -22,17 +22,26 @@ import {
 } from '@/components/ui/select';
 import { Spinner } from '@/components/ui/spinner';
 import { TabsContent } from '@/components/ui/tabs';
-import { useTriggerDeployment } from '@/hooks/queries/use-deployments';
+import { toast } from '@/components/ui/use-toast';
+import { useRedeployEnvironment, useTriggerBuild } from '@/hooks/queries/use-environments';
+import { useDeleteService } from '@/hooks/queries/use-services';
 import { useStagedChangesStore } from '../staged-changes/staged-changes-store';
 
 interface DrawerSettingsTabProps {
+  /** Service.id selected on the canvas. */
   nodeId: string;
+  /** Service.name — used for the delete-confirm dialog label. */
+  nodeName?: string;
   environmentId: string;
+  /** Required for redeploy + delete invalidations. */
+  projectId: string;
   instanceSize?: string;
   replicas?: number;
   domains?: string[];
   onAddDomain?: (domain: string) => void;
   onChangeScaling?: (instanceSize: string, replicas: number) => void;
+  /** Called when the user confirms a service delete so the parent can close the drawer. */
+  onServiceDeleted?: () => void;
 }
 
 const INSTANCE_SIZES = [
@@ -45,26 +54,89 @@ const INSTANCE_SIZES = [
 
 export function DrawerSettingsTab({
   nodeId,
+  nodeName,
   environmentId,
+  projectId,
   instanceSize = 'apps-s-1vcpu-0.5gb',
   replicas = 1,
   domains = [],
   onAddDomain,
   onChangeScaling,
+  onServiceDeleted,
 }: DrawerSettingsTabProps) {
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const [newDomain, setNewDomain] = useState('');
   const [currentSize, setCurrentSize] = useState(instanceSize);
   const [currentReplicas, setCurrentReplicas] = useState(replicas);
 
-  const triggerDeployment = useTriggerDeployment(environmentId);
+  const redeployEnv = useRedeployEnvironment(projectId, environmentId);
+  const triggerBuild = useTriggerBuild(projectId, environmentId);
+  const deleteService = useDeleteService(environmentId, projectId);
   const addChange = useStagedChangesStore((s) => s.addChange);
+
+  const handleTriggerBuild = async () => {
+    try {
+      const result = await triggerBuild.mutateAsync();
+      toast({
+        title: 'Build triggered',
+        description: `GitHub Actions started on ${result.repository}@${result.ref}. The deploy-complete webhook will land in ~30–60s.`,
+      });
+    } catch (error: unknown) {
+      const message =
+        error && typeof error === 'object' && 'response' in error
+          ? (error as { response?: { data?: { message?: string } } }).response?.data?.message
+          : null;
+      toast({
+        title: 'Trigger failed',
+        description:
+          message ?? 'Check that the repo is still connected and Liftoff has workflow permissions.',
+        variant: 'destructive',
+      });
+    }
+  };
 
   const handleRedeploy = async () => {
     try {
-      await triggerDeployment.mutateAsync({});
-    } catch {
-      // handled in component
+      const result = await redeployEnv.mutateAsync();
+      toast({
+        title: 'Redeploy queued',
+        description: `Restarting ${result.deploymentCount} service${
+          result.deploymentCount === 1 ? '' : 's'
+        } with their last good images.`,
+      });
+    } catch (error: unknown) {
+      const message =
+        error && typeof error === 'object' && 'response' in error
+          ? (error as { response?: { data?: { message?: string } } }).response?.data?.message
+          : null;
+      toast({
+        title: 'Redeploy failed',
+        description:
+          message ?? 'Make sure each service has at least one successful deployment first.',
+        variant: 'destructive',
+      });
+    }
+  };
+
+  const handleDeleteService = async () => {
+    try {
+      await deleteService.mutateAsync(nodeId);
+      toast({
+        title: 'Service deleted',
+        description: `${nodeName ?? 'Service'} removed. Click Redeploy to drop it from App Platform.`,
+      });
+      setShowDeleteDialog(false);
+      onServiceDeleted?.();
+    } catch (error: unknown) {
+      const message =
+        error && typeof error === 'object' && 'response' in error
+          ? (error as { response?: { data?: { message?: string } } }).response?.data?.message
+          : null;
+      toast({
+        title: 'Delete failed',
+        description: message ?? 'See logs for details.',
+        variant: 'destructive',
+      });
     }
   };
 
@@ -248,24 +320,55 @@ export function DrawerSettingsTab({
             </span>
             <div className="space-y-4">
               <h4 className="text-2xl font-semibold text-destructive">Danger</h4>
-              <div className="flex gap-2">
+              <ul className="space-y-1 text-sm text-muted-foreground">
+                <li>
+                  <strong className="text-foreground">Deploy now</strong> — kicks a fresh GitHub
+                  Actions build on the latest commit. Works even for first-time deploys.
+                </li>
+                <li>
+                  <strong className="text-foreground">Redeploy</strong> — reuses each service&apos;s
+                  last successful image (no rebuild). Needs prior SUCCESS for every service.
+                </li>
+                <li>
+                  <strong className="text-foreground">Delete service</strong> — removes only this
+                  service. Click Redeploy after to drop it from App Platform.
+                </li>
+              </ul>
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  size="sm"
+                  onClick={() => void handleTriggerBuild()}
+                  disabled={triggerBuild.isPending}
+                >
+                  {triggerBuild.isPending ? (
+                    <Spinner className="mr-1 h-3 w-3" />
+                  ) : (
+                    <Rocket className="mr-1 h-3 w-3" />
+                  )}
+                  Deploy now
+                </Button>
                 <Button
                   variant="outline"
                   size="sm"
                   onClick={() => void handleRedeploy()}
-                  disabled={triggerDeployment.isPending}
+                  disabled={redeployEnv.isPending}
                 >
-                  {triggerDeployment.isPending ? <Spinner className="h-3 w-3" /> : <Rocket className="mr-1 h-3 w-3" />}
+                  {redeployEnv.isPending ? (
+                    <Spinner className="mr-1 h-3 w-3" />
+                  ) : (
+                    <Rocket className="mr-1 h-3 w-3" />
+                  )}
                   Redeploy
                 </Button>
                 <Button
                   variant="outline"
                   size="sm"
                   onClick={() => setShowDeleteDialog(true)}
+                  disabled={deleteService.isPending}
                   className="border-destructive/30 text-destructive hover:bg-destructive/10"
                 >
                   <Trash2 className="mr-1 h-3 w-3" />
-                  Delete Environment
+                  Delete service
                 </Button>
               </div>
             </div>
@@ -287,9 +390,12 @@ export function DrawerSettingsTab({
       <Dialog open={showDeleteDialog} onOpenChange={setShowDeleteDialog}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Delete Environment</DialogTitle>
+            <DialogTitle>Delete service{nodeName ? ` "${nodeName}"` : ''}?</DialogTitle>
             <DialogDescription>
-              This action cannot be undone. All deployments and data associated with this environment will be lost.
+              This removes the service row from the canvas + regenerates the GitHub
+              Actions workflow. The App Platform component stays live until you click
+              <strong> Redeploy environment</strong> — that&apos;s when Pulumi reconciles
+              and drops it. Deployment history for this service is preserved.
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
@@ -298,12 +404,10 @@ export function DrawerSettingsTab({
             </Button>
             <Button
               variant="destructive"
-              onClick={() => {
-                setShowDeleteDialog(false);
-                // deletion handled via API
-              }}
+              onClick={() => void handleDeleteService()}
+              disabled={deleteService.isPending}
             >
-              Delete Environment
+              {deleteService.isPending ? <Spinner className="h-4 w-4" /> : 'Delete service'}
             </Button>
           </DialogFooter>
         </DialogContent>

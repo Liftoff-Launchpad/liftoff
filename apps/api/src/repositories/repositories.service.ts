@@ -1,4 +1,10 @@
-import { BuildStrategy, Repository, Role } from '@prisma/client';
+import {
+  BuildStrategy,
+  DeploymentBundleStatus,
+  DeploymentStatus,
+  Repository,
+  Role,
+} from '@prisma/client';
 import {
   DIGITALOCEAN_ACCESS_TOKEN_SECRET_NAME,
   ErrorCodes,
@@ -607,6 +613,194 @@ export class RepositoriesService implements OnModuleInit {
 
     this.logger.log(
       `Synced ${desired.size} BUILD variables to ${repository.fullName} for env ${environmentId}`,
+    );
+  }
+
+  /**
+   * Triggers a fresh GitHub Actions run for the env. Used by the "Deploy now"
+   * button — works regardless of whether the env has any prior SUCCESS deployments
+   * (unlike `applyVariables` which reuses last good images).
+   *
+   * Re-syncs the workflow file first so we're guaranteed `workflow_dispatch` is
+   * present in the YAML — older workflows from before this feature don't have
+   * the trigger declared, which would fail with "Workflow does not have
+   * workflow_dispatch trigger" on dispatch. The sync is idempotent + cheap.
+   *
+   * After dispatch, the standard webhook → deploy-complete → bundle pipeline
+   * takes over. Returns the workflow file path so the UI can deep-link to the
+   * Actions tab on the repo.
+   */
+  public async triggerBuildForEnvironment(
+    environmentId: string,
+    userId: string,
+  ): Promise<{ workflowFile: string; ref: string; repository: string; bundleId: string }> {
+    const environment = await this.prismaService.environment.findFirst({
+      where: { id: environmentId, deletedAt: null },
+      select: {
+        id: true,
+        gitBranch: true,
+        project: {
+          select: {
+            id: true,
+            repository: { select: { fullName: true, branch: true } },
+          },
+        },
+        services: {
+          where: { deletedAt: null },
+          orderBy: { createdAt: 'asc' },
+          select: { id: true },
+        },
+      },
+    });
+    if (!environment) {
+      throw Exceptions.notFound('Environment not found', ErrorCodes.ENVIRONMENT_NOT_FOUND);
+    }
+    const repository = environment.project.repository;
+    if (!repository) {
+      throw Exceptions.badRequest(
+        'Project has no connected repository — connect one before triggering a build',
+        ErrorCodes.REPOSITORY_NOT_FOUND,
+      );
+    }
+    if (environment.services.length === 0) {
+      throw Exceptions.badRequest(
+        'Environment has no services — add one before triggering a build',
+        ErrorCodes.NOT_FOUND,
+      );
+    }
+    await this.projectsService.assertProjectRole(environment.project.id, userId, [
+      Role.OWNER,
+      Role.ADMIN,
+    ]);
+
+    // Re-sync the workflow file so we have `workflow_dispatch:` in the YAML.
+    // If this is a long-lived env whose workflow was committed before this
+    // feature, the dispatch call would 422 with "Workflow does not have
+    // workflow_dispatch trigger" otherwise.
+    await this.syncWorkflowForEnvironment(environmentId, userId);
+
+    // Cancel any in-flight deployments for this env so the deploy-complete
+    // callbacks from this build always pick OUR new bundle's rows (the handler
+    // selects the most recent QUEUED/BUILDING/PUSHING per service). Stale
+    // bundles flip to CANCELLED instead of timing out 30 min later.
+    await this.cancelInFlightDeploymentsForEnv(environmentId);
+
+    // Pre-create the bundle + per-service deployments BEFORE dispatching.
+    // GitHub Actions runs the matrix, each step calls deploy-complete with a
+    // serviceName — the handler finds these QUEUED rows and updates them. Without
+    // this pre-creation, every callback would fail with "No deployment in
+    // QUEUED/BUILDING/PUSHING state for service X".
+    const bundle = await this.prismaService.deploymentBundle.create({
+      data: {
+        environmentId,
+        status: DeploymentBundleStatus.IN_PROGRESS,
+        triggeredBy: `manual-dispatch:${userId}`,
+        startedAt: new Date(),
+        deployments: {
+          create: environment.services.map((service) => ({
+            environmentId,
+            serviceId: service.id,
+            status: DeploymentStatus.QUEUED,
+            branch: environment.gitBranch,
+            commitMessage: 'Manual deploy (workflow_dispatch)',
+            triggeredBy: userId,
+          })),
+        },
+      },
+      select: { id: true },
+    });
+
+    const githubToken = await this.getDecryptedGitHubTokenOrThrow(userId);
+    const workflowFilename = WORKFLOW_FILE_PATH.split('/').pop() ?? 'liftoff-deploy.yml';
+    const ref = environment.gitBranch || repository.branch || 'main';
+
+    try {
+      await this.githubService.dispatchWorkflow(
+        githubToken,
+        repository.fullName,
+        workflowFilename,
+        ref,
+      );
+    } catch (error) {
+      // Roll back the bundle on dispatch failure so we don't leave orphan
+      // QUEUED deployments to time out 30 min later.
+      await this.prismaService.deployment
+        .updateMany({
+          where: { bundleId: bundle.id },
+          data: { status: DeploymentStatus.CANCELLED, completedAt: new Date() },
+        })
+        .catch(() => undefined);
+      await this.prismaService.deploymentBundle
+        .update({
+          where: { id: bundle.id },
+          data: { status: DeploymentBundleStatus.CANCELLED, completedAt: new Date() },
+        })
+        .catch(() => undefined);
+
+      this.logger.warn(
+        `dispatchWorkflow failed for ${repository.fullName}/${workflowFilename}@${ref}: ${
+          error instanceof Error ? error.message : 'unknown error'
+        }`,
+      );
+      throw new AppException(
+        'Failed to trigger GitHub Actions workflow — check that the repo still grants Liftoff access',
+        HttpStatus.BAD_GATEWAY,
+        ErrorCodes.REPOSITORY_ACCESS_DENIED,
+      );
+    }
+
+    this.logger.log(
+      `Dispatched workflow ${workflowFilename} on ${repository.fullName}@${ref} (bundle ${bundle.id}) for env ${environmentId}`,
+    );
+
+    return {
+      workflowFile: workflowFilename,
+      ref,
+      repository: repository.fullName,
+      bundleId: bundle.id,
+    };
+  }
+
+  /**
+   * Cancels every Deployment in the env still in an active state, plus their
+   * bundles. Called by the Deploy-now flow so the new bundle's QUEUED rows are
+   * the unambiguous targets for arriving deploy-complete callbacks.
+   */
+  private async cancelInFlightDeploymentsForEnv(environmentId: string): Promise<void> {
+    const activeStatuses: DeploymentStatus[] = [
+      DeploymentStatus.PENDING,
+      DeploymentStatus.QUEUED,
+      DeploymentStatus.BUILDING,
+      DeploymentStatus.PUSHING,
+    ];
+    const stuck = await this.prismaService.deployment.findMany({
+      where: { environmentId, status: { in: activeStatuses } },
+      select: { id: true, bundleId: true },
+    });
+    if (stuck.length === 0) return;
+
+    const completedAt = new Date();
+    await this.prismaService.deployment.updateMany({
+      where: { id: { in: stuck.map((d) => d.id) } },
+      data: {
+        status: DeploymentStatus.CANCELLED,
+        completedAt,
+        errorMessage: 'Superseded by a manual Deploy-now trigger',
+      },
+    });
+
+    const affectedBundles = Array.from(
+      new Set(stuck.map((d) => d.bundleId).filter((id): id is string => id !== null)),
+    );
+    if (affectedBundles.length > 0) {
+      await this.prismaService.deploymentBundle.updateMany({
+        where: { id: { in: affectedBundles } },
+        data: { status: DeploymentBundleStatus.CANCELLED, completedAt },
+      });
+    }
+
+    this.logger.log(
+      `Cancelled ${stuck.length} in-flight deployments before manual Deploy-now (env ${environmentId})`,
     );
   }
 

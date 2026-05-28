@@ -290,6 +290,33 @@ export class GitHubService {
   }
 
   /**
+   * Triggers a `workflow_dispatch` event on the given workflow file. Used by
+   * `POST /environments/:id/build` to kick a fresh build without requiring a
+   * code push.
+   *
+   * Returns true on success. Throws on 404 (workflow doesn't exist or doesn't
+   * declare a `workflow_dispatch` trigger) and on auth failures.
+   *
+   * `workflowFile` is the file path relative to `.github/workflows/`, e.g.
+   * `liftoff-deploy.yml`. `ref` is the branch the workflow should run on.
+   */
+  public async dispatchWorkflow(
+    githubToken: string,
+    fullName: string,
+    workflowFile: string,
+    ref: string,
+  ): Promise<void> {
+    await this.request(
+      {
+        method: 'POST',
+        url: `/repos/${fullName}/actions/workflows/${encodeURIComponent(workflowFile)}/dispatches`,
+        data: { ref },
+      },
+      githubToken,
+    );
+  }
+
+  /**
    * Fetches the raw UTF-8 contents of one file on a branch. Returns null on 404
    * so callers can probe multiple candidate filenames without try/catch boilerplate.
    * Used by `.env.example` detection (P2.8).

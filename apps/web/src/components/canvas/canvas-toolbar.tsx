@@ -11,6 +11,7 @@ import {
   MoreHorizontal,
   Plus,
   Rocket,
+  ScrollText,
   Settings,
 } from 'lucide-react';
 import Link from 'next/link';
@@ -37,6 +38,10 @@ interface CanvasToolbarProps {
   onAddClick: () => void;
   activityOpen: boolean;
   onActivityToggle: () => void;
+  /** Whether the env-wide Logs panel is currently open. */
+  logsOpen: boolean;
+  /** Toggle the env-wide Logs slide-out (streams all services interleaved). */
+  onLogsToggle: () => void;
 }
 
 function getProjectStatus(nodes: Array<{ data: { status?: DeploymentStatusType } }>): {
@@ -65,6 +70,8 @@ export function CanvasToolbar({
   onAddClick,
   activityOpen,
   onActivityToggle,
+  logsOpen,
+  onLogsToggle,
 }: CanvasToolbarProps): JSX.Element {
   const [menuOpen, setMenuOpen] = useState(false);
   const status = getProjectStatus(nodes);
@@ -125,6 +132,14 @@ export function CanvasToolbar({
             Dev
           </button>
         </div>
+        <Button
+          variant={logsOpen ? 'secondary' : 'ghost'}
+          size="icon"
+          title="Env-wide logs"
+          onClick={onLogsToggle}
+        >
+          <ScrollText className="h-4 w-4" />
+        </Button>
         <Button
           variant={activityOpen ? 'secondary' : 'ghost'}
           size="icon"

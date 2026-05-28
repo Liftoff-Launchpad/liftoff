@@ -26,14 +26,24 @@ export class DeployCompleteDto {
 
   @ApiProperty({
     example: 'registry.digitalocean.com/liftoff/my-webapp/production:abc1234',
+    description:
+      'Required for `status=success`. Empty/omitted is allowed when status=failure ' +
+      'or status=cancelled — the build never produced an image, so the workflow ' +
+      'still calls back so we can mark the deployment FAILED with the run URL.',
+    required: false,
   })
   @IsString()
-  @IsNotEmpty()
+  @IsOptional()
   @MaxLength(500)
   // Accepts both legacy 2-segment (`<project>/<env>`) and new 3-segment
   // (`<project>/<env>/<service>`) repositories in the path component.
-  @Matches(/^registry\.digitalocean\.com\/[a-z0-9-]+\/[a-z0-9-]+(\/[a-z0-9-]+)?(\/[a-z0-9-]+)?:[a-f0-9]+$/i)
-  public imageUri!: string;
+  // When the matrix step failed, IMAGE_URI is set but empty — the regex
+  // would reject an empty string, so we only validate when non-empty.
+  @Matches(
+    /^(|registry\.digitalocean\.com\/[a-z0-9-]+\/[a-z0-9-]+(\/[a-z0-9-]+)?(\/[a-z0-9-]+)?:[a-f0-9]+)$/i,
+    { message: 'imageUri must be empty (on failure) or a fully-qualified DOCR URI' },
+  )
+  public imageUri?: string;
 
   @ApiProperty({ example: 'abc1234567890def' })
   @IsString()
@@ -59,12 +69,14 @@ export class DeployCompleteDto {
 
   @ApiProperty({
     example: 'dockerfile',
-    description: 'Build strategy selected by the workflow',
+    description: 'Build strategy selected by the workflow. Omitted when the build failed before strategy detection.',
     required: false,
   })
   @IsString()
   @IsOptional()
-  @Matches(/^(dockerfile|nixpacks)$/i)
+  @Matches(/^(|dockerfile|nixpacks)$/i, {
+    message: 'buildStrategy must be empty or dockerfile/nixpacks',
+  })
   public buildStrategy?: string;
 
   @ApiProperty({

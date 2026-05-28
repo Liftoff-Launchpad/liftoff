@@ -43,11 +43,16 @@ export interface GitHubPushPayload {
  *
  * `serviceName` is optional for back-compat with workflows committed before
  * the matrix build (P1.7). When absent, the env's first Service is assumed.
+ *
+ * `imageUri` is optional because the workflow's `Notify Liftoff` step fires
+ * `if: always()` — failed matrix steps don't produce an image but still POST
+ * here so we can mark the deployment FAILED with the GitHub Actions run URL.
+ * The handler requires it only on the success path.
  */
 export interface DeployCompletePayload {
   environmentId: string;
   serviceName?: string;
-  imageUri: string;
+  imageUri?: string;
   commitSha: string;
   status?: string;
   runUrl?: string;
@@ -98,18 +103,34 @@ export class WebhooksService {
       return;
     }
 
-    const repository = await this.prismaService.repository.findFirst({
-      where: { fullName: payload.repository.full_name },
+    // The same GitHub repo may be linked to multiple Liftoff projects (each with
+    // its own webhook on GitHub and its own encrypted secret in our DB). On every
+    // push, GitHub fires every webhook, but only one signature matches the
+    // currently-firing secret. Try every candidate row, use whichever decrypts
+    // to a matching HMAC. Without this, `findFirst` would return one arbitrary
+    // row and 401 every other project's webhook.
+    const repositoryCandidates = await this.prismaService.repository.findMany({
+      where: {
+        fullName: payload.repository.full_name,
+        webhookSecret: { not: null },
+      },
       select: { id: true, projectId: true, webhookSecret: true },
     });
-    if (!repository || !repository.webhookSecret) {
+    if (repositoryCandidates.length === 0) {
       this.logger.log(`Ignoring webhook for unconnected repository ${payload.repository.full_name}`);
       return;
     }
 
-    const webhookSecret = this.decryptSecret(repository.webhookSecret, 'repository webhook secret');
-    const isValidSignature = this.githubService.verifyWebhookSignature(rawBody, signature, webhookSecret);
-    if (!isValidSignature) {
+    let matchedRepository: { id: string; projectId: string } | null = null;
+    for (const candidate of repositoryCandidates) {
+      if (!candidate.webhookSecret) continue;
+      const secret = this.decryptSecret(candidate.webhookSecret, 'repository webhook secret');
+      if (this.githubService.verifyWebhookSignature(rawBody, signature, secret)) {
+        matchedRepository = { id: candidate.id, projectId: candidate.projectId };
+        break;
+      }
+    }
+    if (!matchedRepository) {
       throw new AppException(
         'Invalid webhook signature',
         HttpStatus.UNAUTHORIZED,
@@ -117,11 +138,13 @@ export class WebhooksService {
       );
     }
 
-    this.logger.log(`Webhook received from ${payload.repository.full_name}`);
+    this.logger.log(
+      `Webhook received from ${payload.repository.full_name} (matched project ${matchedRepository.projectId})`,
+    );
 
     const branch = payload.ref.replace('refs/heads/', '');
     const environment = await this.prismaService.environment.findFirst({
-      where: { projectId: repository.projectId, gitBranch: branch, deletedAt: null },
+      where: { projectId: matchedRepository.projectId, gitBranch: branch, deletedAt: null },
       select: {
         id: true,
         services: {
@@ -304,14 +327,20 @@ export class WebhooksService {
       );
     }
 
+    const statusLower = payload.status?.toLowerCase();
+    const isFailure = statusLower === 'failure' || statusLower === 'cancelled';
+
     // Failure path: mark this service's deployment FAILED. If part of a bundle,
     // the bundle will be set to FAILED/PARTIAL once all siblings have reported.
-    if (payload.status && payload.status.toLowerCase() === 'failure') {
+    // imageUri is often empty here — the matrix step failed before producing
+    // an image. We still record runUrl / strategy so the UI can deep-link to
+    // the failed GitHub Actions run.
+    if (isFailure) {
       await this.prismaService.deployment.update({
         where: { id: deployment.id },
         data: {
           status: DeploymentStatus.FAILED,
-          errorMessage: `Build/push failed for service "${targetService.name}". GitHub Actions run: ${payload.runUrl || 'unknown'}`,
+          errorMessage: `Build/push ${statusLower} for service "${targetService.name}". GitHub Actions run: ${payload.runUrl || 'unknown'}`,
           buildRunUrl: payload.runUrl ?? null,
           buildStrategy: payload.buildStrategy?.toLowerCase() ?? null,
           buildPlan: this.parseBuildPlan(payload.buildPlan),
@@ -319,7 +348,7 @@ export class WebhooksService {
         },
       });
       this.logger.warn(
-        `Deployment ${deployment.id} (service ${targetService.name}) failed during build/push`,
+        `Deployment ${deployment.id} (service ${targetService.name}) ${statusLower} during build/push`,
       );
       if (deployment.bundleId) {
         await this.finalizeBundleIfReady(deployment.bundleId);
@@ -327,14 +356,24 @@ export class WebhooksService {
       return;
     }
 
-    // Success path: record the image. Status moves to a "ready to apply" sentinel.
-    // We DON'T enqueue per-service apply jobs — instead we wait for the bundle to
-    // complete and dispatch one atomic apply over all services together.
+    // Success path: we MUST have an image URI to deploy. The DTO allows it to
+    // be missing on failure callbacks, so guard here for the success branch.
+    if (!payload.imageUri) {
+      throw Exceptions.badRequest(
+        'imageUri is required when status is success or omitted',
+        ErrorCodes.DEPLOYMENT_IMAGE_NOT_FOUND,
+      );
+    }
+    const imageUri = payload.imageUri;
+
+    // Record the image. Status moves to a "ready to apply" sentinel. We DON'T
+    // enqueue per-service apply jobs — instead we wait for the bundle to complete
+    // and dispatch one atomic apply over all services together.
     await this.prismaService.deployment.update({
       where: { id: deployment.id },
       data: {
         commitSha: payload.commitSha,
-        imageUri: payload.imageUri,
+        imageUri,
         buildRunUrl: payload.runUrl ?? null,
         buildStrategy: payload.buildStrategy?.toLowerCase() ?? null,
         buildPlan: this.parseBuildPlan(payload.buildPlan),
@@ -350,7 +389,7 @@ export class WebhooksService {
     // Legacy single-deployment path (no bundle — manual trigger or pre-Phase-1 row).
     await this.dispatchApply(
       environment,
-      [{ deploymentId: deployment.id, serviceName: targetService.name, imageUri: payload.imageUri }],
+      [{ deploymentId: deployment.id, serviceName: targetService.name, imageUri }],
       null,
     );
   }
