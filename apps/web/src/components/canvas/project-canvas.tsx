@@ -19,6 +19,7 @@ import {
 import '@xyflow/react/dist/style.css';
 import { useQueryClient } from '@tanstack/react-query';
 
+import { AddServiceDialog } from './add-service-dialog';
 import { CanvasEmptyState } from './canvas-empty-state';
 import { ServiceNode } from './service-node';
 import { DatabaseNode } from './database-node';
@@ -82,6 +83,7 @@ export function ProjectCanvas({ projectId }: ProjectCanvasProps) {
   const [contextMenuPos, setContextMenuPos] = useState<{ x: number; y: number } | null>(null);
   const [viewMode, setViewMode] = useState<'canvas' | 'dev'>('canvas');
   const [activityOpen, setActivityOpen] = useState(false);
+  const [addServiceOpen, setAddServiceOpen] = useState(false);
 
   const addChange = useStagedChangesStore((s) => s.addChange);
 
@@ -389,11 +391,24 @@ export function ProjectCanvas({ projectId }: ProjectCanvasProps) {
           <CommandPalette
             open={commandPaletteOpen}
             onOpenChange={setCommandPaletteOpen}
+            onAddNewService={() => {
+              setCommandPaletteOpen(false);
+              setAddServiceOpen(true);
+            }}
             onAddService={handleAddService}
             onRedeployAll={handleDeploy}
             onDevMode={() => setViewMode('dev')}
           />
         </>
+      )}
+
+      {activeEnvironmentId && (
+        <AddServiceDialog
+          open={addServiceOpen}
+          onOpenChange={setAddServiceOpen}
+          environmentId={activeEnvironmentId}
+          projectId={projectId}
+        />
       )}
     </div>
   );

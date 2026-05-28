@@ -506,13 +506,70 @@ Files / changes:
 
 ---
 
-## Open questions for you
+## Resolved decisions
 
-1. **Static sites:** Do you want to use App Platform's native static site hosting (`static_sites[]` — cheaper, faster, no container) when the kind is static, or always go through the container path? I'd default to native static, container as opt-out — but it changes the cost model.
-2. **Routing:** When multiple services share one App, do you want path-based routing (`/api → api service, / → frontend`) as default, or subdomain-based (`api.<env>.ondigitalocean.app`)? Path-based is simpler and free; subdomains need DO domain config.
-3. **Default service scaling on monorepo split:** if a user has a monorepo with frontend + API + worker, should each default to its own service node, or do we offer "I'll figure it out — just deploy something" mode that picks one entry point?
-4. **Phase order:** the order above is "build the data model out, then wire the UI" — does that match what you'd want shown in demos along the way? An alternative is to do Phase 2 (vault) first as it has the most visible UX impact even on a single-service env.
-5. **Scope of "any repo deployable":** does that include static-only sites without any backend (App Platform native static hosting), or only containerized apps? Phase 5 currently assumes "yes to native static."
-6. **Service-to-service networking:** do you want public service URLs (each gets its own subdomain) or only internal-by-default with explicit `routes: [path: ...]` per service to expose? Internal-by-default is safer.
+All 12 open questions resolved with defaults below. Rationale recorded next to each.
 
-Let me know which of these matter most and I'll narrow the next steps. Otherwise, my suggested order is: **Phase 2 (vault, big visible win) → Phase 1 (multi-service) → Phase 3 (metrics+scale) → Phase 5 smart defaults → Phase 4 multi-repo** — leading with what makes the existing single-service path noticeably better before introducing more cardinality.
+### Architecture
+
+| # | Decision | Resolved |
+|---|---|---|
+| A1 | One DO `App` per `Environment` | ✅ Matches App Platform's atomic deploy/rollback unit; one billing unit per env |
+| A2 | Path-based routing default, subdomain opt-in via custom domains | ✅ Path-based is native on App Platform; subdomain-per-App would 3×+ the bill on small envs |
+| A3 | LiftoffConfig v2, v1 auto-promote at parse time | ✅ Existing envs keep working; no user-facing migration |
+| A4 | Per-repo webhook (unchanged) | ✅ One webhook per `ProjectRepository`; matrix matches services per push |
+| A5 | `DeploymentBundle` to group per-service deployments | ✅ Atomic App Platform deploys + grouped rollback |
+| A6 | Variable scopes: `BUILD | RUNTIME | BOTH` | ✅ Build-scope syncs to GitHub Actions secrets; runtime-only stays in DB |
+| A7 | Linked vars resolved at Pulumi compile time, cycle detection on apply | ✅ App Platform env vars are static; refs bake at deploy time |
+
+### Phase 1 — Multi-service per env (single repo) — **SHIPPED**
+
+| # | Decision | Resolved |
+|---|---|---|
+| P1.1 | Start with just `SERVICE` kind; workers/jobs/static sites in Phase 5 | ✅ Smaller initial surface; less to break |
+| P1.2 | First service added → `routes[].path = /`; subsequent → `/<name>`; overridable | ✅ Matches the common monorepo case (frontend at root) |
+| P1.3 | Phase order: 1 → 2 → 3 → 5 → 4 | ✅ Data model first; multi-repo last because it depends on multi-service being solid |
+
+#### What landed in Phase 1
+
+- Prisma: `Service`, `DeploymentBundle`, `Deployment.serviceId`/`bundleId`; migration `20260528085707_multi_service_phase_1` backfills one default Service per existing env and links existing deployments.
+- Shared schema: `LiftoffConfigV2Schema` (multi-service `services[]`), `promoteV1ToV2()`, `safeParseLiftoffConfigAny()` for version-agnostic parsing — callers always get v2.
+- Pulumi component: `AppPlatformApp` takes `services: AppPlatformServiceSpec[]`; `createAppPlatformStack` takes v2 config + `serviceImages` map; healthcheck is optional (TCP fallback); per-service `LIFTOFF_PROJECT`/`LIFTOFF_ENVIRONMENT` env vars injected.
+- API: `ServicesModule` with full CRUD; `CanvasService.getCanvas` reads from Service rows; `EnvironmentsService.create` seeds a default Service; `WorkflowGeneratorService.generate` emits a `strategy.matrix` over Services; webhooks create a `DeploymentBundle` on push + aggregate per-service `deploy-complete` callbacks → one atomic apply (PROVISION or DEPLOY) when all services have reported.
+- DeploymentProcessor: `handleDeploy` supports `bundleId` — patches every service's image in one `updateApp` cycle; image-by-repository matching means the right tag lands on the right service.
+- InfrastructureProcessor: `handleProvision` supports `bundleId` — builds `serviceImages` from the bundle's deployments and runs a single `pulumi up`.
+- Frontend: canvas renders one node per Service; command palette has "Add Service" action → `AddServiceDialog`; `useServices` / `useCreateService` / `useUpdateService` / `useDeleteService` hooks; service creation triggers backend workflow regeneration so the next push uses the new matrix.
+
+#### Manual end-to-end test (P1.11)
+
+1. Open the canvas in the browser
+2. Press `⌘K` (or click `Add`) → select **Add Service** → fill in (e.g. `api`, sourceDir=`./api`, port=`4000`, healthcheck=`/health`) → submit
+3. Confirm a new Service node appears on the canvas
+4. Inspect the repo: `.github/workflows/liftoff-deploy.yml` should have a new commit with TWO matrix entries
+5. Push a commit to the repo → both services build in parallel on GitHub Actions
+6. API logs show two `deploy-complete` callbacks; bundle aggregates; one `pulumi up` patches the App spec to include both services
+7. App Platform live URL serves both services at their respective paths (`/` and `/api`)
+
+### Phase 2 — Vault
+
+| # | Decision | Resolved |
+|---|---|---|
+| P2.1 | Vault backend: encrypted Postgres column via `EncryptionService` | ✅ Same pattern as `DOAccount.doToken`; zero new infra deps; can swap behind interface later |
+| P2.2 | Variable inheritance: env-level cascades into every service, per-service overrides | ✅ Matches K8s/Docker model; lets `NODE_ENV=production` be set once per env |
+| P2.3 | Secret redaction: write-only after creation, "rotate" button instead of reveal | ✅ Matches GitHub/CI norms; avoids shared-screen leaks |
+
+### Phase 5 — Smart defaults / static sites
+
+| # | Decision | Resolved |
+|---|---|---|
+| P5.1 | Static sites: native App Platform `static_sites[]` by default | ✅ Cheaper, CDN-served, often free; container as opt-out |
+| P5.2 | Never auto-inject Dockerfiles into user repos | ✅ Modifying user code on connect is surprising; rely on Nixpacks; surface a "click to commit suggested Dockerfile" action instead |
+| P5.3 | First-connect: create one default service; surface "we noticed X, add Y too?" banner | ✅ Aggressive multi-service detection causes wrong-detection complaints |
+
+### Networking
+
+| # | Decision | Resolved |
+|---|---|---|
+| N1 | Services internal-by-default; only services with explicit `routes[]` are publicly reachable | ✅ Safer; backends shouldn't be hit from the internet unless declared |
+| N2 | Inject `INTERNAL_<SERVICE>_URL` env vars automatically for every service in the env | ✅ Lower friction; no surprise empty refs |
+| N3 | Block service delete if other services reference it via `${{ services.X.* }}` | ✅ Predictable; no broken envs from cascading deletes |

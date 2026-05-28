@@ -1,4 +1,4 @@
-import { Repository, Role } from '@prisma/client';
+import { BuildStrategy, Repository, Role } from '@prisma/client';
 import {
   DIGITALOCEAN_ACCESS_TOKEN_SECRET_NAME,
   ErrorCodes,
@@ -14,7 +14,10 @@ import { PrismaService } from '../prisma/prisma.service';
 import { ProjectsService } from '../projects/projects.service';
 import { ConnectRepositoryDto } from './dto/connect-repository.dto';
 import { GitHubRepo, GitHubService } from './github.service';
-import { WorkflowGeneratorService } from './workflow-generator.service';
+import {
+  ServiceBuildSpec,
+  WorkflowGeneratorService,
+} from './workflow-generator.service';
 
 const WORKFLOW_FILE_PATH = '.github/workflows/liftoff-deploy.yml';
 
@@ -192,15 +195,17 @@ export class RepositoriesService implements OnModuleInit {
         doToken,
       );
 
+      const serviceBuildSpecs = await this.buildServiceBuildSpecs(
+        targetEnvironment.id,
+        project.name,
+        targetEnvironment.name,
+      );
       const workflowContent = await this.workflowGeneratorService.generate({
         projectName: project.name,
         environmentId: targetEnvironment.id,
         branch: dto.branch,
-        imageRepository: `${project.name}/${targetEnvironment.name}`,
         liftoffApiUrl: this.getWebhookBaseUrl(),
-        buildStrategy: this.resolveBuildStrategy(targetEnvironment.configParsed),
-        dockerfilePath: this.resolveDockerfilePath(targetEnvironment.configParsed),
-        dockerBuildContext: this.resolveDockerBuildContext(targetEnvironment.configParsed),
+        services: serviceBuildSpecs,
         doToken,
         doAccountId: targetEnvironment.doAccountId,
       });
@@ -290,6 +295,82 @@ export class RepositoriesService implements OnModuleInit {
     }
 
     return this.toConnectedRepository(repository);
+  }
+
+  /**
+   * Regenerates `.github/workflows/liftoff-deploy.yml` in the user's repo with
+   * a matrix entry for every current Service in the environment. Call this
+   * after any structural change to the env's services (added/removed/renamed)
+   * so the next push actually builds the right set of images.
+   *
+   * No-op when the project has no connected repository (the workflow file will
+   * be generated at connect time using the then-current service list).
+   */
+  public async syncWorkflowForEnvironment(environmentId: string, userId: string): Promise<void> {
+    const environment = await this.prismaService.environment.findFirst({
+      where: { id: environmentId, deletedAt: null },
+      select: {
+        id: true,
+        name: true,
+        gitBranch: true,
+        doAccountId: true,
+        project: {
+          select: {
+            id: true,
+            name: true,
+            repository: {
+              select: { id: true, fullName: true, branch: true },
+            },
+          },
+        },
+      },
+    });
+
+    if (!environment) {
+      throw Exceptions.notFound('Environment not found', ErrorCodes.ENVIRONMENT_NOT_FOUND);
+    }
+
+    const repository = environment.project.repository;
+    if (!repository) {
+      // No repo connected yet — workflow file gets created on first connect.
+      this.logger.log(
+        `syncWorkflowForEnvironment: skipping env ${environmentId} (no connected repository)`,
+      );
+      return;
+    }
+
+    const githubToken = await this.getDecryptedGitHubTokenOrThrow(userId);
+    const doToken = await this.getDecryptedDoTokenForDoAccount(environment.doAccountId, userId);
+
+    const serviceBuildSpecs = await this.buildServiceBuildSpecs(
+      environment.id,
+      environment.project.name,
+      environment.name,
+    );
+    const workflowContent = await this.workflowGeneratorService.generate({
+      projectName: environment.project.name,
+      environmentId: environment.id,
+      branch: repository.branch,
+      liftoffApiUrl: this.getWebhookBaseUrl(),
+      services: serviceBuildSpecs,
+      doToken,
+      doAccountId: environment.doAccountId,
+    });
+
+    await this.githubService.commitFile(
+      githubToken,
+      repository.fullName,
+      WORKFLOW_FILE_PATH,
+      workflowContent,
+      `chore: sync Liftoff deploy workflow (${serviceBuildSpecs.length} service${
+        serviceBuildSpecs.length === 1 ? '' : 's'
+      })`,
+      repository.branch,
+    );
+
+    this.logger.log(
+      `Synced workflow file for env ${environmentId} (${serviceBuildSpecs.length} services)`,
+    );
   }
 
   private decryptSecret(encryptedSecret: string): string {
@@ -397,45 +478,48 @@ export class RepositoriesService implements OnModuleInit {
     });
   }
 
-  private resolveDockerfilePath(configParsed: unknown): string {
-    const defaultDockerfilePath = 'Dockerfile';
-    if (!configParsed) {
-      return defaultDockerfilePath;
+  /**
+   * Reads the env's Service rows and emits one ServiceBuildSpec per service so
+   * the workflow generator can fan out into a matrix build. Single-service envs
+   * (the Phase 1 common case) use `<project>/<env>` as the image repository so
+   * pre-multi-service deployments and image-by-repository matching in
+   * DeploymentProcessor keep working without a stack rebuild. Multi-service envs
+   * scope each service's images under `<project>/<env>/<service>` so the spec
+   * patcher can route the right tag to the right service entry.
+   */
+  private async buildServiceBuildSpecs(
+    environmentId: string,
+    projectName: string,
+    environmentName: string,
+  ): Promise<ServiceBuildSpec[]> {
+    const services = await this.prismaService.service.findMany({
+      where: { environmentId, deletedAt: null },
+      orderBy: { createdAt: 'asc' },
+    });
+
+    if (services.length === 0) {
+      throw Exceptions.internalError(
+        'Environment has no services to build',
+        ErrorCodes.INTERNAL_ERROR,
+      );
     }
 
-    const parsedConfig = safeParseLiftoffConfig(configParsed);
-    if (!parsedConfig.success) {
-      return defaultDockerfilePath;
-    }
-
-    return parsedConfig.data.build.dockerfile_path;
+    const useNamespacedRepos = services.length > 1;
+    return services.map((service) => ({
+      name: service.name,
+      context: service.sourceDir || '.',
+      dockerfilePath: service.dockerfilePath || 'Dockerfile',
+      buildStrategy: this.mapBuildStrategy(service.buildStrategy),
+      imageRepository: useNamespacedRepos
+        ? `${projectName}/${environmentName}/${service.name}`
+        : `${projectName}/${environmentName}`,
+    }));
   }
 
-  private resolveDockerBuildContext(configParsed: unknown): string {
-    const defaultDockerBuildContext = '.';
-    if (!configParsed) {
-      return defaultDockerBuildContext;
-    }
-
-    const parsedConfig = safeParseLiftoffConfig(configParsed);
-    if (!parsedConfig.success) {
-      return defaultDockerBuildContext;
-    }
-
-    return parsedConfig.data.build.context;
-  }
-
-  private resolveBuildStrategy(configParsed: unknown): 'auto' | 'dockerfile' | 'nixpacks' {
-    if (!configParsed) {
-      return 'auto';
-    }
-
-    const parsedConfig = safeParseLiftoffConfig(configParsed);
-    if (!parsedConfig.success) {
-      return 'auto';
-    }
-
-    return parsedConfig.data.build.strategy;
+  private mapBuildStrategy(strategy: BuildStrategy): 'auto' | 'dockerfile' | 'nixpacks' {
+    if (strategy === BuildStrategy.DOCKERFILE) return 'dockerfile';
+    if (strategy === BuildStrategy.NIXPACKS) return 'nixpacks';
+    return 'auto';
   }
 
   private async syncWebhookUrlsOnBoot(): Promise<void> {

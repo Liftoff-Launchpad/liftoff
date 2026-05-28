@@ -15,24 +15,53 @@ export interface AppPlatformDatabaseArgs {
   dbUser: pulumi.Input<string>;
 }
 
+/**
+ * One App Platform component within the env's single DO `App`. Phase 1 only
+ * materialises `kind: 'service'` entries (HTTP services). `worker` / `job` /
+ * `static_site` kinds are reserved for Phase 5 and currently dispatch to the
+ * same `services[]` slot for simplicity (the spec already validates upstream).
+ */
+export interface AppPlatformServiceSpec {
+  /** Unique within the env's App spec; becomes the App Platform component name. */
+  name: string;
+  /** Component type. Phase 1: must be 'service'. */
+  kind: 'service' | 'worker' | 'job' | 'static_site';
+  /** Fully-qualified DOCR image URI to deploy. */
+  imageUri: string;
+  /** HTTP port the container listens on. App Platform sets PORT=<this> at runtime. */
+  httpPort: number;
+  instanceSizeSlug: string;
+  instanceCount: number;
+  /** Public route paths served by this service. At least one required for kind='service'. */
+  routes: Array<{ path: string }>;
+  /** Plain env vars exposed at runtime as `GENERAL` type. */
+  envVars: Record<string, string>;
+  /**
+   * Names of secrets to wire as SECRET type. Phase 1 sets value === name (the
+   * actual secret value gets resolved at App Platform's deploy time from
+   * upstream secret storage). Phase 2 (vault) resolves real values here.
+   */
+  secretNames: string[];
+  /** Optional HTTP healthcheck path; if omitted, App Platform falls back to TCP probe. */
+  healthCheckPath?: string;
+}
+
 export interface AppPlatformAppArgs {
+  /** Human-friendly App Platform app name (auto-truncated to App Platform's 32 char cap). */
   appName: string;
   projectName: string;
   environmentName: string;
   region: string;
-  imageUri: string;
-  httpPort: number;
-  instanceSizeSlug: string;
-  instanceCount: number;
-  envVars: Record<string, string>;
-  secretNames: string[];
-  healthCheckPath: string;
+  /** One spec entry per Service row in the env. Phase 1 typically length 1. */
+  services: AppPlatformServiceSpec[];
   database?: AppPlatformDatabaseArgs;
   provider: digitalocean.Provider;
 }
 
 /**
- * Provisions a DigitalOcean App Platform app using a DOCR image source.
+ * Provisions a DigitalOcean App Platform app, with one entry in `services[]`
+ * per `AppPlatformServiceSpec` passed in. All services share the App's URL via
+ * path-based routing (their `routes[]` paths must be distinct).
  */
 export class AppPlatformApp extends pulumi.ComponentResource {
   public readonly appId: pulumi.Output<string>;
@@ -46,12 +75,15 @@ export class AppPlatformApp extends pulumi.ComponentResource {
   ) {
     super('liftoff:app-platform:AppPlatformApp', name, {}, opts);
 
+    if (args.services.length === 0) {
+      throw new Error('AppPlatformApp requires at least one service spec');
+    }
+
     const tags = createLiftoffTags(args.projectName, args.environmentName);
-    const parsedImage = this.parseDocrImageUri(args.imageUri);
     const appName = truncateKebabCase(toKebabCase(args.appName), 32);
-    const serviceName = truncateKebabCase(
-      toKebabCase(`${args.projectName}-${args.environmentName}-svc`),
-      32,
+
+    const serviceEntries = args.services.map((service) =>
+      this.toServiceSpec(service, args.projectName, args.environmentName),
     );
 
     const app = new digitalocean.App(
@@ -60,24 +92,7 @@ export class AppPlatformApp extends pulumi.ComponentResource {
         spec: {
           name: appName,
           region: args.region,
-          services: [
-            {
-              name: serviceName,
-              image: {
-                registry: parsedImage.registry,
-                registryType: 'DOCR',
-                repository: parsedImage.repository,
-                tag: parsedImage.tag,
-              },
-              httpPort: args.httpPort,
-              instanceCount: args.instanceCount,
-              instanceSizeSlug: args.instanceSizeSlug,
-              healthCheck: {
-                httpPath: args.healthCheckPath,
-              },
-              envs: this.buildServiceEnvs(args.envVars, args.secretNames),
-            },
-          ],
+          services: serviceEntries,
           ...(args.database
             ? {
                 databases: [
@@ -112,6 +127,39 @@ export class AppPlatformApp extends pulumi.ComponentResource {
     });
   }
 
+  private toServiceSpec(
+    service: AppPlatformServiceSpec,
+    projectName: string,
+    environmentName: string,
+  ): digitalocean.types.input.AppSpecService {
+    const parsedImage = this.parseDocrImageUri(service.imageUri);
+    // Service-component name on App Platform must be ≤32 chars; include the
+    // Liftoff service name (already kebab) plus an env disambiguator so the
+    // same service name across envs doesn't collide.
+    const componentName = truncateKebabCase(
+      toKebabCase(`${service.name}-${environmentName}`),
+      32,
+    );
+
+    return {
+      name: componentName,
+      image: {
+        registry: parsedImage.registry,
+        registryType: 'DOCR',
+        repository: parsedImage.repository,
+        tag: parsedImage.tag,
+      },
+      httpPort: service.httpPort,
+      instanceCount: service.instanceCount,
+      instanceSizeSlug: service.instanceSizeSlug,
+      ...(service.healthCheckPath
+        ? { healthCheck: { httpPath: service.healthCheckPath } }
+        : {}),
+      ...(service.routes.length > 0 ? { routes: service.routes } : {}),
+      envs: this.buildServiceEnvs(service.envVars, service.secretNames, projectName, environmentName),
+    };
+  }
+
   private parseDocrImageUri(imageUri: string): DocrImageReference {
     const match =
       /^registry\.digitalocean\.com\/(?<registry>[^/]+)\/(?<repository>.+?)(?::(?<tag>[^:]+))?$/.exec(
@@ -134,6 +182,8 @@ export class AppPlatformApp extends pulumi.ComponentResource {
   private buildServiceEnvs(
     envVars: Record<string, string>,
     secretNames: string[],
+    projectName: string,
+    environmentName: string,
   ): digitalocean.types.input.AppSpecServiceEnv[] {
     const generalEnvs = Object.entries(envVars).map(([key, value]) => ({
       key,
@@ -142,6 +192,9 @@ export class AppPlatformApp extends pulumi.ComponentResource {
       type: 'GENERAL',
     }));
 
+    // Phase 1: secret values are not yet stored in Liftoff's vault, so we set
+    // value === key as a placeholder. App Platform's UI lets the user fill these in.
+    // Phase 2 (vault) resolves the real values at deploy time.
     const secretEnvs = secretNames.map((secretName) => ({
       key: secretName,
       value: secretName,
@@ -149,6 +202,13 @@ export class AppPlatformApp extends pulumi.ComponentResource {
       type: 'SECRET',
     }));
 
-    return [...generalEnvs, ...secretEnvs];
+    // Inject INTERNAL_LIFTOFF_PROJECT and INTERNAL_LIFTOFF_ENV so apps can
+    // self-identify in logs / error reporting without us hard-coding it.
+    const liftoffMeta = [
+      { key: 'LIFTOFF_PROJECT', value: projectName, scope: 'RUN_TIME', type: 'GENERAL' as const },
+      { key: 'LIFTOFF_ENVIRONMENT', value: environmentName, scope: 'RUN_TIME', type: 'GENERAL' as const },
+    ];
+
+    return [...liftoffMeta, ...generalEnvs, ...secretEnvs];
   }
 }

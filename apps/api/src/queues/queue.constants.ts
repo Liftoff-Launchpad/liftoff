@@ -32,6 +32,12 @@ export interface DeployJobPayload {
   deploymentId: string;
   environmentId: string;
   commitSha?: string;
+  /**
+   * If set, the processor loads the whole DeploymentBundle and applies all
+   * per-service images atomically (one updateApp call patching N services).
+   * If absent, falls back to single-deployment behaviour.
+   */
+  bundleId?: string;
 }
 
 export interface RollbackJobPayload {
@@ -42,8 +48,14 @@ export interface RollbackJobPayload {
 export interface InfraProvisionJobPayload {
   deploymentId: string;
   environmentId: string;
+  /**
+   * Single-image fallback (legacy single-service path). Ignored when bundleId
+   * is set — the processor pulls per-service image URIs from the bundle's
+   * deployment rows instead.
+   */
   imageUri: string;
   configYaml: string;
+  bundleId?: string;
 }
 
 export interface InfraDestroyJobPayload {

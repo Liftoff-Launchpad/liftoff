@@ -6,7 +6,8 @@ import {
 } from '@prisma/client';
 import {
   ErrorCodes,
-  safeParseLiftoffConfig,
+  type LiftoffConfigV2,
+  safeParseLiftoffConfigAny,
 } from '@liftoff/shared';
 import { Queue } from 'bullmq';
 import * as yaml from 'js-yaml';
@@ -87,6 +88,15 @@ export class InfrastructureService {
     const doToken = this.decryptDoToken(environment.doAccount.doToken);
     const imageUri = await this.resolveImageUri(environment, doToken);
     const stackName = this.buildStackName(environment.project.id, environment.name);
+    const firstService = config.services[0];
+    if (!firstService) {
+      throw Exceptions.badRequest(
+        'LiftoffConfig must contain at least one service',
+        ErrorCodes.CONFIG_VALIDATION_FAILED,
+      );
+    }
+    // Phase 1 preview path: same single-image assumption as provision.
+    const serviceImages: Record<string, string> = { [firstService.name]: imageUri };
 
     const stackArgs: AppPlatformStackArgs = {
       projectName: environment.project.name,
@@ -95,8 +105,8 @@ export class InfrastructureService {
       environmentId: environment.id,
       doRegion: environment.doAccount.region,
       doToken,
-      imageUri,
       config,
+      serviceImages,
     };
 
     return this.pulumiRunnerService.preview({
@@ -181,9 +191,9 @@ export class InfrastructureService {
     return environment;
   }
 
-  private resolveEnvironmentConfig(environment: EnvironmentPreviewContext): AppPlatformStackArgs['config'] {
+  private resolveEnvironmentConfig(environment: EnvironmentPreviewContext): LiftoffConfigV2 {
     if (environment.configParsed !== null) {
-      const parsedResult = safeParseLiftoffConfig(environment.configParsed);
+      const parsedResult = safeParseLiftoffConfigAny(environment.configParsed);
       if (parsedResult.success) {
         return parsedResult.data;
       }
@@ -203,7 +213,7 @@ export class InfrastructureService {
       throw Exceptions.badRequest('Invalid liftoff.yml YAML syntax', ErrorCodes.CONFIG_INVALID_YAML);
     }
 
-    const parsedConfig = safeParseLiftoffConfig(yamlPayload);
+    const parsedConfig = safeParseLiftoffConfigAny(yamlPayload);
     if (!parsedConfig.success) {
       throw Exceptions.badRequest('liftoff.yml validation failed', ErrorCodes.CONFIG_VALIDATION_FAILED);
     }

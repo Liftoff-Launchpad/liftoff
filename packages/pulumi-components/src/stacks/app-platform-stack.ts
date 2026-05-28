@@ -1,7 +1,10 @@
-import type { LiftoffConfig } from '@liftoff/shared';
+import type { LiftoffConfigV2, LiftoffServiceV2 } from '@liftoff/shared';
 import * as digitalocean from '@pulumi/digitalocean';
 import * as pulumi from '@pulumi/pulumi';
-import { AppPlatformApp } from '../app-platform/app-platform-app';
+import {
+  AppPlatformApp,
+  type AppPlatformServiceSpec,
+} from '../app-platform/app-platform-app';
 import { ManagedPostgres } from '../database/managed-postgres';
 import { DocrRepository } from '../registry/docr-repository';
 import { SpacesBucket } from '../storage/spaces-bucket';
@@ -14,8 +17,20 @@ export interface AppPlatformStackArgs {
   environmentId: string;
   doRegion: string;
   doToken: string;
-  imageUri: string;
-  config: LiftoffConfig;
+  /**
+   * LiftoffConfig v2 — multi-service. Callers MUST promote v1 configs before
+   * passing in (use `promoteV1ToV2` from `@liftoff/shared`).
+   */
+  config: LiftoffConfigV2;
+  /**
+   * Maps each `config.services[].name` → fully-qualified DOCR image URI.
+   * Every service in `config.services` must have an entry here.
+   *
+   * In Phase 1 the workflow generator builds one image per Service and reports
+   * back via `/webhooks/deploy-complete` per matrix entry; this map aggregates
+   * all of those before the Pulumi stack is updated.
+   */
+  serviceImages: Record<string, string>;
 }
 
 export interface StackOutputs {
@@ -29,13 +44,30 @@ export interface StackOutputs {
 }
 
 /**
- * Creates the Liftoff app-platform stack resources in a user's DigitalOcean account.
+ * Provisions Liftoff's app-platform stack in a user's DigitalOcean account:
+ *
+ *   - 1× DOCR (registry creds + repo URL) — env-wide, shared across services
+ *   - Optional 1× Managed Postgres if `config.database.enabled`
+ *   - Optional 1× Spaces Bucket if `config.storage.enabled`
+ *   - 1× App Platform App with one `services[]` entry per `config.services` row
+ *     (path-based routing across services)
+ *
+ * The single `digitalocean.Provider` is scoped to the user's token so every
+ * resource lands in their account.
  */
 export function createAppPlatformStack(args: AppPlatformStackArgs): StackOutputs {
+  validateServiceImages(args.config.services, args.serviceImages);
+
   const provider = new digitalocean.Provider('user-account', {
     token: args.doToken,
   });
-  const registryName = resolveRegistryNameFromImageUri(args.imageUri);
+  const firstService = args.config.services[0];
+  if (!firstService) {
+    throw new Error('AppPlatformStack requires at least one service in config.services');
+  }
+  const registryName = resolveRegistryNameFromImageUri(
+    args.serviceImages[firstService.name] ?? '',
+  );
 
   const registry = new DocrRepository(
     'registry',
@@ -83,6 +115,10 @@ export function createAppPlatformStack(args: AppPlatformStackArgs): StackOutputs
     );
   }
 
+  const serviceSpecs: AppPlatformServiceSpec[] = args.config.services.map((service) =>
+    toServiceSpec(service, args.serviceImages[service.name] ?? ''),
+  );
+
   const app = new AppPlatformApp(
     'app',
     {
@@ -90,13 +126,7 @@ export function createAppPlatformStack(args: AppPlatformStackArgs): StackOutputs
       projectName: args.projectName,
       environmentName: args.environmentName,
       region: args.doRegion,
-      imageUri: args.imageUri,
-      httpPort: args.config.runtime.port,
-      instanceSizeSlug: args.config.runtime.instance_size,
-      instanceCount: args.config.runtime.replicas,
-      envVars: args.config.env ?? {},
-      secretNames: args.config.secrets ?? [],
-      healthCheckPath: args.config.healthcheck?.path ?? '/health',
+      services: serviceSpecs,
       database: database
         ? {
             clusterName: database.clusterName,
@@ -128,6 +158,44 @@ export function createAppPlatformStack(args: AppPlatformStackArgs): StackOutputs
   };
 
   return outputs;
+}
+
+function toServiceSpec(
+  service: LiftoffServiceV2,
+  imageUri: string,
+): AppPlatformServiceSpec {
+  const routes =
+    service.routes && service.routes.length > 0
+      ? service.routes.map((route) => ({ path: route.path }))
+      : [{ path: '/' }];
+
+  return {
+    name: service.name,
+    kind: service.type,
+    imageUri,
+    httpPort: service.runtime.port,
+    instanceSizeSlug: service.runtime.instance_size,
+    instanceCount: service.runtime.replicas,
+    routes,
+    envVars: service.env ?? {},
+    secretNames: service.secrets ?? [],
+    healthCheckPath: service.healthcheck?.path,
+  };
+}
+
+function validateServiceImages(
+  services: LiftoffConfigV2['services'],
+  serviceImages: Record<string, string>,
+): void {
+  const missing = services
+    .map((service) => service.name)
+    .filter((name) => !serviceImages[name]);
+  if (missing.length > 0) {
+    throw new Error(
+      `serviceImages is missing entries for: ${missing.join(', ')}. ` +
+        'Every service in config.services must have a corresponding image URI.',
+    );
+  }
 }
 
 function resolveRegistryNameFromImageUri(imageUri: string): string {

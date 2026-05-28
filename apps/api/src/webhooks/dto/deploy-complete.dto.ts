@@ -11,12 +11,28 @@ export class DeployCompleteDto {
   public environmentId!: string;
 
   @ApiProperty({
+    example: 'api',
+    description:
+      'Name of the Service this image belongs to. Optional for back-compat with ' +
+      'single-service envs created before P1.7 — when omitted, the env\'s first ' +
+      'Service is assumed.',
+    required: false,
+  })
+  @IsString()
+  @IsOptional()
+  @MaxLength(40)
+  @Matches(/^[a-z0-9][a-z0-9-]*$/)
+  public serviceName?: string;
+
+  @ApiProperty({
     example: 'registry.digitalocean.com/liftoff/my-webapp/production:abc1234',
   })
   @IsString()
   @IsNotEmpty()
   @MaxLength(500)
-  @Matches(/^registry\.digitalocean\.com\/[a-z0-9-]+\/[a-z0-9-]+\/[a-z0-9-]+:[a-f0-9]+$/i)
+  // Accepts both legacy 2-segment (`<project>/<env>`) and new 3-segment
+  // (`<project>/<env>/<service>`) repositories in the path component.
+  @Matches(/^registry\.digitalocean\.com\/[a-z0-9-]+\/[a-z0-9-]+(\/[a-z0-9-]+)?(\/[a-z0-9-]+)?:[a-f0-9]+$/i)
   public imageUri!: string;
 
   @ApiProperty({ example: 'abc1234567890def' })

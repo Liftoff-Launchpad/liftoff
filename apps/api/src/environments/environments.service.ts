@@ -83,6 +83,11 @@ export class EnvironmentsService {
 
   /**
    * Creates an environment after project-role and DO account ownership checks.
+   *
+   * Also seeds the env's first Service row (one App Platform component named after the
+   * project), so the canvas always shows at least one service node for a fresh env.
+   * The Service inherits its runtime config from the default liftoff.yml so existing
+   * pipelines (workflow generation, Pulumi compile) keep working unchanged.
    */
   public async create(
     projectId: string,
@@ -96,6 +101,11 @@ export class EnvironmentsService {
     const liftoffDeploySecret = this.encryptionService.encrypt(generatedDeploySecret);
     const defaultConfig = this.buildDefaultEnvironmentConfig();
 
+    const projectRepository = await this.prismaService.repository.findUnique({
+      where: { projectId },
+      select: { id: true },
+    });
+
     let createdEnvironment: Environment;
     try {
       createdEnvironment = await this.prismaService.environment.create({
@@ -108,6 +118,21 @@ export class EnvironmentsService {
           serviceType: this.toPrismaServiceType(dto.serviceType),
           configYaml: defaultConfig.configYaml,
           configParsed: defaultConfig.configParsed,
+          services: {
+            create: {
+              repositoryId: projectRepository?.id ?? null,
+              name: defaultConfig.configParsed.service.name,
+              kind: 'SERVICE',
+              sourceDir: defaultConfig.configParsed.build.context,
+              buildStrategy: this.mapBuildStrategy(defaultConfig.configParsed.build.strategy),
+              dockerfilePath: defaultConfig.configParsed.build.dockerfile_path,
+              port: defaultConfig.configParsed.runtime.port,
+              instanceSize: defaultConfig.configParsed.runtime.instance_size,
+              replicas: defaultConfig.configParsed.runtime.replicas,
+              routePath: '/',
+              healthcheckPath: defaultConfig.configParsed.healthcheck.path,
+            },
+          },
         },
       });
     } catch (error) {
@@ -137,6 +162,12 @@ export class EnvironmentsService {
     }
 
     return createdEnvironment;
+  }
+
+  private mapBuildStrategy(strategy: 'auto' | 'dockerfile' | 'nixpacks'): 'AUTO' | 'DOCKERFILE' | 'NIXPACKS' {
+    if (strategy === 'dockerfile') return 'DOCKERFILE';
+    if (strategy === 'nixpacks') return 'NIXPACKS';
+    return 'AUTO';
   }
 
   /**
