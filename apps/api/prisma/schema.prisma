@@ -55,6 +55,17 @@ enum DeploymentBundleStatus {
   CANCELLED
 }
 
+enum VariableScope {
+  BUILD // GitHub Actions secret → --build-arg at docker/nixpacks build time
+  RUNTIME // App Platform env → process.env.* in the running container
+  BOTH
+}
+
+enum VariableKind {
+  PLAIN // value readable via API (UI shows it)
+  SECRET // write-only after creation (UI shows ••••, "Change value" replaces)
+}
+
 enum LogLevel {
   DEBUG
   INFO
@@ -182,6 +193,7 @@ model Environment {
   services            Service[]
   deployments         Deployment[]
   deploymentBundles   DeploymentBundle[]
+  variables           EnvironmentVariable[]
   pulumiStack         PulumiStack?
   resources           InfrastructureResource[]
   alerts              Alert[]
@@ -193,46 +205,90 @@ model Environment {
 }
 
 model Service {
-  id              String        @id @default(cuid())
-  environmentId   String        @map("environment_id")
+  id              String            @id @default(cuid())
+  environmentId   String            @map("environment_id")
   // Optional: which Repository builds this service. In Phase 1 every Service in an env
   // shares the env's single repo (Project.repository), so this column is informational.
   // Becomes meaningful in Phase 4 (multi-repo per project).
-  repositoryId    String?       @map("repository_id")
+  repositoryId    String?           @map("repository_id")
   name            String
-  kind            ServiceKind   @default(SERVICE)
+  kind            ServiceKind       @default(SERVICE)
   // Build configuration -----------------------------------------------------------
-  sourceDir       String        @default(".") @map("source_dir")
-  buildStrategy   BuildStrategy @default(AUTO) @map("build_strategy")
-  dockerfilePath  String        @default("Dockerfile") @map("dockerfile_path")
+  sourceDir       String            @default(".") @map("source_dir")
+  buildStrategy   BuildStrategy     @default(AUTO) @map("build_strategy")
+  dockerfilePath  String            @default("Dockerfile") @map("dockerfile_path")
   // Runtime configuration ---------------------------------------------------------
-  port            Int           @default(3000)
-  instanceSize    String        @default("apps-s-1vcpu-0.5gb") @map("instance_size")
-  replicas        Int           @default(1)
+  port            Int               @default(3000)
+  instanceSize    String            @default("apps-s-1vcpu-0.5gb") @map("instance_size")
+  replicas        Int               @default(1)
   // SERVICE: HTTP path served by this service (e.g. "/", "/api"). Null = internal-only.
   // WORKER / JOB: ignored.
-  routePath       String?       @map("route_path")
+  routePath       String?           @map("route_path")
   // SERVICE: healthcheck HTTP path. Null = App Platform TCP probe.
-  healthcheckPath String?       @map("healthcheck_path")
+  healthcheckPath String?           @map("healthcheck_path")
   // WORKER / JOB: process command override.
   command         String?
   // JOB only: cron schedule string + kind (cron | pre_deploy | post_deploy | failed_deploy).
-  jobSchedule     String?       @map("job_schedule")
-  jobKind         String?       @map("job_kind")
+  jobSchedule     String?           @map("job_schedule")
+  jobKind         String?           @map("job_kind")
   // Canvas state ------------------------------------------------------------------
-  canvasPosition  Json?         @map("canvas_position")
+  canvasPosition  Json?             @map("canvas_position")
   // Lifecycle ---------------------------------------------------------------------
-  createdAt       DateTime      @default(now()) @map("created_at")
-  updatedAt       DateTime      @updatedAt @map("updated_at")
-  deletedAt       DateTime?     @map("deleted_at")
-  environment     Environment   @relation(fields: [environmentId], references: [id], onDelete: Cascade)
-  repository      Repository?   @relation(fields: [repositoryId], references: [id], onDelete: SetNull)
+  createdAt       DateTime          @default(now()) @map("created_at")
+  updatedAt       DateTime          @updatedAt @map("updated_at")
+  deletedAt       DateTime?         @map("deleted_at")
+  environment     Environment       @relation(fields: [environmentId], references: [id], onDelete: Cascade)
+  repository      Repository?       @relation(fields: [repositoryId], references: [id], onDelete: SetNull)
   deployments     Deployment[]
+  variables       ServiceVariable[]
 
   @@unique([environmentId, name])
   @@index([environmentId])
   @@index([repositoryId])
   @@map("services")
+}
+
+/// Environment-scoped variable. Inherited by every Service in the env; can be
+/// overridden by a ServiceVariable with the same key on a specific Service.
+/// Values are encrypted at rest with AES-256-GCM via EncryptionService.
+model EnvironmentVariable {
+  id             String        @id @default(cuid())
+  environmentId  String        @map("environment_id")
+  key            String // ^[A-Z_][A-Z0-9_]*$ validated at the API layer
+  encryptedValue String        @map("encrypted_value")
+  scope          VariableScope @default(RUNTIME)
+  kind           VariableKind  @default(PLAIN)
+  /// User id (or 'system') that created the variable. Light audit trail.
+  createdBy      String?       @map("created_by")
+  /// Bumped on every value change. UI shows "Last changed N days ago" on SECRET rows.
+  lastRotatedAt  DateTime?     @map("last_rotated_at")
+  createdAt      DateTime      @default(now()) @map("created_at")
+  updatedAt      DateTime      @updatedAt @map("updated_at")
+  environment    Environment   @relation(fields: [environmentId], references: [id], onDelete: Cascade)
+
+  @@unique([environmentId, key])
+  @@index([environmentId])
+  @@map("environment_variables")
+}
+
+/// Service-scoped variable. Overrides any EnvironmentVariable with the same key
+/// for THIS service only. Same encryption + audit shape as EnvironmentVariable.
+model ServiceVariable {
+  id             String        @id @default(cuid())
+  serviceId      String        @map("service_id")
+  key            String
+  encryptedValue String        @map("encrypted_value")
+  scope          VariableScope @default(RUNTIME)
+  kind           VariableKind  @default(PLAIN)
+  createdBy      String?       @map("created_by")
+  lastRotatedAt  DateTime?     @map("last_rotated_at")
+  createdAt      DateTime      @default(now()) @map("created_at")
+  updatedAt      DateTime      @updatedAt @map("updated_at")
+  service        Service       @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+
+  @@unique([serviceId, key])
+  @@index([serviceId])
+  @@map("service_variables")
 }
 
 model DeploymentBundle {

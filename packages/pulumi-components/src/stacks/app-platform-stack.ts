@@ -4,6 +4,7 @@ import * as pulumi from '@pulumi/pulumi';
 import {
   AppPlatformApp,
   type AppPlatformServiceSpec,
+  type AppPlatformVariable,
 } from '../app-platform/app-platform-app';
 import { ManagedPostgres } from '../database/managed-postgres';
 import { DocrRepository } from '../registry/docr-repository';
@@ -25,12 +26,15 @@ export interface AppPlatformStackArgs {
   /**
    * Maps each `config.services[].name` → fully-qualified DOCR image URI.
    * Every service in `config.services` must have an entry here.
-   *
-   * In Phase 1 the workflow generator builds one image per Service and reports
-   * back via `/webhooks/deploy-complete` per matrix entry; this map aggregates
-   * all of those before the Pulumi stack is updated.
    */
   serviceImages: Record<string, string>;
+  /**
+   * Phase 2: maps each `config.services[].name` → resolved runtime variables
+   * (vault env-scoped + service-scoped, with service overriding env on shared keys).
+   * Pass an empty array for any service with no variables; omit a service key
+   * entirely and only the auto-injected LIFTOFF_* metadata vars will appear.
+   */
+  serviceVariables?: Record<string, AppPlatformVariable[]>;
 }
 
 export interface StackOutputs {
@@ -115,8 +119,13 @@ export function createAppPlatformStack(args: AppPlatformStackArgs): StackOutputs
     );
   }
 
+  const serviceVariables = args.serviceVariables ?? {};
   const serviceSpecs: AppPlatformServiceSpec[] = args.config.services.map((service) =>
-    toServiceSpec(service, args.serviceImages[service.name] ?? ''),
+    toServiceSpec(
+      service,
+      args.serviceImages[service.name] ?? '',
+      serviceVariables[service.name] ?? [],
+    ),
   );
 
   const app = new AppPlatformApp(
@@ -163,11 +172,31 @@ export function createAppPlatformStack(args: AppPlatformStackArgs): StackOutputs
 function toServiceSpec(
   service: LiftoffServiceV2,
   imageUri: string,
+  vaultVariables: AppPlatformVariable[],
 ): AppPlatformServiceSpec {
   const routes =
     service.routes && service.routes.length > 0
       ? service.routes.map((route) => ({ path: route.path }))
       : [{ path: '/' }];
+
+  // Merge liftoff.yml legacy `env`/`secrets` (low priority) with vault values
+  // (high priority — they're the explicit user-supplied source of truth in Phase 2+).
+  // Vault entries override yaml entries on the same key.
+  const merged = new Map<string, AppPlatformVariable>();
+  for (const [key, value] of Object.entries(service.env ?? {})) {
+    merged.set(key, { key, value, kind: 'plain' });
+  }
+  for (const secretName of service.secrets ?? []) {
+    // Legacy yaml `secrets: [NAME]` only specifies the key — the actual value
+    // was meant to be set in App Platform's UI. Phase 2+ stops emitting these
+    // when the user has a vault entry; the fallback keeps existing yaml configs working.
+    if (!merged.has(secretName)) {
+      merged.set(secretName, { key: secretName, value: secretName, kind: 'secret' });
+    }
+  }
+  for (const variable of vaultVariables) {
+    merged.set(variable.key, variable);
+  }
 
   return {
     name: service.name,
@@ -177,8 +206,7 @@ function toServiceSpec(
     instanceSizeSlug: service.runtime.instance_size,
     instanceCount: service.runtime.replicas,
     routes,
-    envVars: service.env ?? {},
-    secretNames: service.secrets ?? [],
+    variables: Array.from(merged.values()),
     healthCheckPath: service.healthcheck?.path,
   };
 }

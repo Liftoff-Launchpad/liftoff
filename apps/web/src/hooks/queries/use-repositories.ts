@@ -98,6 +98,32 @@ export function useConnectRepo(projectId: string) {
   });
 }
 
+export interface EnvExampleScanResult {
+  foundAt: string | null;
+  keys: Array<{
+    key: string;
+    defaultValue: string | null;
+    hint: string | null;
+  }>;
+}
+
+/**
+ * Scans the connected repo for `.env.example` (or `.sample` / `.template`).
+ * Returns the parsed keys + optional defaults + comment hints so onboarding
+ * can pre-populate "fill in your env vars" before first deploy.
+ */
+export function useScanEnvExample(projectId: string) {
+  return useMutation({
+    mutationFn: async (payload: { branch: string; sourceDir?: string }) => {
+      const response = await apiClient.post<EnvExampleScanResult>(
+        `/projects/${projectId}/repository/scan-env-example`,
+        payload,
+      );
+      return response.data;
+    },
+  });
+}
+
 /**
  * Disconnects a connected repository from a project.
  */

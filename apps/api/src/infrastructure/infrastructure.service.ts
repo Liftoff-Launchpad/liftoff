@@ -22,9 +22,11 @@ import {
   QUEUE_NAMES,
 } from '../queues/queue.constants';
 import { ProjectsService } from '../projects/projects.service';
+import { VariablesService } from '../variables/variables.service';
 import { PulumiRunnerService } from './pulumi-runner.service';
 import {
   AppPlatformStackArgs,
+  AppPlatformVariable,
   PulumiPreviewResult,
 } from './types/pulumi.types';
 
@@ -70,6 +72,7 @@ export class InfrastructureService {
     private readonly encryptionService: EncryptionService,
     private readonly doApiService: DoApiService,
     private readonly pulumiRunnerService: PulumiRunnerService,
+    private readonly variablesService: VariablesService,
     @InjectQueue(QUEUE_NAMES.INFRASTRUCTURE)
     private readonly infrastructureQueue: Queue<InfraDestroyJobPayload>,
   ) {}
@@ -97,6 +100,7 @@ export class InfrastructureService {
     }
     // Phase 1 preview path: same single-image assumption as provision.
     const serviceImages: Record<string, string> = { [firstService.name]: imageUri };
+    const serviceVariables = await this.resolveServiceVariablesForEnv(environment.id);
 
     const stackArgs: AppPlatformStackArgs = {
       projectName: environment.project.name,
@@ -107,6 +111,7 @@ export class InfrastructureService {
       doToken,
       config,
       serviceImages,
+      serviceVariables,
     };
 
     return this.pulumiRunnerService.preview({
@@ -235,6 +240,26 @@ export class InfrastructureService {
       environment.doAccountId,
     );
     return `registry.digitalocean.com/${registryName}/${environment.project.name}/${environment.name}:preview`;
+  }
+
+  private async resolveServiceVariablesForEnv(
+    environmentId: string,
+  ): Promise<Record<string, AppPlatformVariable[]>> {
+    const services = await this.prismaService.service.findMany({
+      where: { environmentId, deletedAt: null },
+      select: { id: true, name: true },
+    });
+
+    const result: Record<string, AppPlatformVariable[]> = {};
+    for (const service of services) {
+      const entries = await this.variablesService.resolveRuntimeVariablesForService(service.id);
+      result[service.name] = entries.map((entry) => ({
+        key: entry.key,
+        value: entry.value ?? '',
+        kind: entry.kind === 'SECRET' ? 'secret' : 'plain',
+      }));
+    }
+    return result;
   }
 
   private decryptDoToken(encryptedToken: string): string {

@@ -25,6 +25,7 @@ import { ServiceNode } from './service-node';
 import { DatabaseNode } from './database-node';
 import { CanvasToolbar } from './canvas-toolbar';
 import { ConfigDrawer } from './config-drawer/config-drawer';
+import { DrawerLogsTab } from './config-drawer/drawer-logs-tab';
 import { DrawerVariablesTab } from './config-drawer/drawer-variables-tab';
 import { DrawerMetricsTab } from './config-drawer/drawer-metrics-tab';
 import { DrawerSettingsTab } from './config-drawer/drawer-settings-tab';
@@ -363,16 +364,11 @@ export function ProjectCanvas({ projectId }: ProjectCanvasProps) {
                   <>
                     <DrawerMetricsTab environmentId={String(selectedNode.data?.environmentId ?? '')} />
                     <DrawerVariablesTab
-                      nodeId={selectedNode.id}
-                      canvasNodes={canvasData?.nodes ?? []}
-                      onChange={(vars) => {
-                        addChange({
-                          nodeId: selectedNode.id,
-                          type: 'CHANGE_VARIABLE',
-                          label: `Update ${vars.length} variables`,
-                          payload: { variables: vars },
-                        });
-                      }}
+                      serviceId={selectedNode.id}
+                      environmentId={String(selectedNode.data?.environmentId ?? '')}
+                    />
+                    <DrawerLogsTab
+                      environmentId={String(selectedNode.data?.environmentId ?? '')}
                     />
                     <DrawerSettingsTab
                       nodeId={selectedNode.id}

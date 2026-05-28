@@ -37,6 +37,13 @@ export interface GenerateWorkflowConfig {
    * at least one entry. Single-service envs pass a 1-element array.
    */
   services: ServiceBuildSpec[];
+  /**
+   * Phase 2: BUILD-scope variable keys to expose to every matrix job as build args.
+   * Values are pulled from `LIFTOFF_BUILD_<KEY>` Actions secrets that
+   * `RepositoriesService.syncBuildVariablesForEnvironment` upserts. Empty array
+   * means no build args (legacy single-service envs without variables).
+   */
+  buildVariableKeys?: string[];
   doToken: string;
   doAccountId?: string;
 }
@@ -73,6 +80,17 @@ export class WorkflowGeneratorService {
       .map((service) => this.renderMatrixEntry(service))
       .join('\n');
 
+    const buildVariableKeys = (config.buildVariableKeys ?? []).filter((key) =>
+      /^[A-Z_][A-Z0-9_]*$/.test(key),
+    );
+    const buildVarEnvLines = buildVariableKeys
+      .map(
+        (key) =>
+          `          ${key}: \${{ secrets.LIFTOFF_BUILD_${key} }}`,
+      )
+      .join('\n');
+    const buildArgFlagsScript = this.renderBuildArgFlagsScript(buildVariableKeys);
+
     return `name: Liftoff Deploy
 
 on:
@@ -106,31 +124,33 @@ ${matrixEntries}
           CONFIGURED_BUILD_STRATEGY: \${{ matrix.service.buildStrategy }}
           CONFIGURED_DOCKERFILE_PATH: \${{ matrix.service.dockerfilePath }}
           CONFIGURED_DOCKER_CONTEXT: \${{ matrix.service.context }}
+${buildVarEnvLines}
         run: |
           set -euo pipefail
 
           BUILD_STRATEGY=""
           BUILD_PLAN=""
+${buildArgFlagsScript}
 
           # auto-detect: Dockerfile in context wins, otherwise Nixpacks; explicit overrides honored.
           if [ "$CONFIGURED_BUILD_STRATEGY" = "dockerfile" ]; then
             BUILD_STRATEGY="dockerfile"
-            docker build -f "$CONFIGURED_DOCKERFILE_PATH" -t "$IMAGE_URI" "$CONFIGURED_DOCKER_CONTEXT"
+            docker build $DOCKER_BUILD_ARGS -f "$CONFIGURED_DOCKERFILE_PATH" -t "$IMAGE_URI" "$CONFIGURED_DOCKER_CONTEXT"
           elif [ "$CONFIGURED_BUILD_STRATEGY" = "nixpacks" ]; then
             BUILD_STRATEGY="nixpacks"
             curl -fsSL https://nixpacks.com/install.sh | bash
             export PATH="$HOME/.local/bin:$PATH"
             BUILD_PLAN="$(nixpacks plan "$CONFIGURED_DOCKER_CONTEXT" --format json | tr -d '\\n')"
-            nixpacks build "$CONFIGURED_DOCKER_CONTEXT" --name "$IMAGE_URI"
+            nixpacks build "$CONFIGURED_DOCKER_CONTEXT" $NIXPACKS_ENV_ARGS --name "$IMAGE_URI"
           elif [ -f "$CONFIGURED_DOCKER_CONTEXT/Dockerfile" ]; then
             BUILD_STRATEGY="dockerfile"
-            docker build -f "$CONFIGURED_DOCKER_CONTEXT/Dockerfile" -t "$IMAGE_URI" "$CONFIGURED_DOCKER_CONTEXT"
+            docker build $DOCKER_BUILD_ARGS -f "$CONFIGURED_DOCKER_CONTEXT/Dockerfile" -t "$IMAGE_URI" "$CONFIGURED_DOCKER_CONTEXT"
           else
             BUILD_STRATEGY="nixpacks"
             curl -fsSL https://nixpacks.com/install.sh | bash
             export PATH="$HOME/.local/bin:$PATH"
             BUILD_PLAN="$(nixpacks plan "$CONFIGURED_DOCKER_CONTEXT" --format json | tr -d '\\n')"
-            nixpacks build "$CONFIGURED_DOCKER_CONTEXT" --name "$IMAGE_URI"
+            nixpacks build "$CONFIGURED_DOCKER_CONTEXT" $NIXPACKS_ENV_ARGS --name "$IMAGE_URI"
           fi
 
           docker push "$IMAGE_URI"
@@ -169,6 +189,37 @@ ${matrixEntries}
             -H "Content-Type: application/json" \\
             -d "$PAYLOAD"
 `;
+  }
+
+  /**
+   * Emits the shell that constructs `DOCKER_BUILD_ARGS` (for `docker build`) and
+   * `NIXPACKS_ENV_ARGS` (for `nixpacks build`) from the BUILD-scope env vars
+   * already in the job's environment via the workflow-level `env:` block.
+   *
+   * Empty BUILD set → both vars are unset/empty so downstream commands stay valid.
+   */
+  private renderBuildArgFlagsScript(buildVariableKeys: string[]): string {
+    if (buildVariableKeys.length === 0) {
+      return `          DOCKER_BUILD_ARGS=""\n          NIXPACKS_ENV_ARGS=""`;
+    }
+
+    const dockerLines = buildVariableKeys
+      .map(
+        (key) =>
+          `          if [ -n "\${${key}+x}" ]; then DOCKER_BUILD_ARGS="$DOCKER_BUILD_ARGS --build-arg ${key}"; fi`,
+      )
+      .join('\n');
+    const nixpacksLines = buildVariableKeys
+      .map(
+        (key) =>
+          `          if [ -n "\${${key}+x}" ]; then NIXPACKS_ENV_ARGS="$NIXPACKS_ENV_ARGS --env ${key}=\${${key}}"; fi`,
+      )
+      .join('\n');
+
+    return `          DOCKER_BUILD_ARGS=""
+          NIXPACKS_ENV_ARGS=""
+${dockerLines}
+${nixpacksLines}`;
   }
 
   private renderMatrixEntry(service: ServiceBuildSpec): string {

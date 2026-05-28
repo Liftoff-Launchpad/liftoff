@@ -16,10 +16,8 @@ export interface AppPlatformDatabaseArgs {
 }
 
 /**
- * One App Platform component within the env's single DO `App`. Phase 1 only
- * materialises `kind: 'service'` entries (HTTP services). `worker` / `job` /
- * `static_site` kinds are reserved for Phase 5 and currently dispatch to the
- * same `services[]` slot for simplicity (the spec already validates upstream).
+ * One App Platform component within the env's single DO `App`. Phase 1 ships
+ * `kind: 'service'`; workers/jobs/static_sites are reserved for Phase 5.
  */
 export interface AppPlatformServiceSpec {
   /** Unique within the env's App spec; becomes the App Platform component name. */
@@ -34,16 +32,25 @@ export interface AppPlatformServiceSpec {
   instanceCount: number;
   /** Public route paths served by this service. At least one required for kind='service'. */
   routes: Array<{ path: string }>;
-  /** Plain env vars exposed at runtime as `GENERAL` type. */
-  envVars: Record<string, string>;
   /**
-   * Names of secrets to wire as SECRET type. Phase 1 sets value === name (the
-   * actual secret value gets resolved at App Platform's deploy time from
-   * upstream secret storage). Phase 2 (vault) resolves real values here.
+   * Runtime variables resolved from the vault (P2.2/P2.3) — merged env-scoped +
+   * service-scoped + service overrides. `kind: 'secret'` → emitted as App
+   * Platform `SECRET` type (DO encrypts on its side); `kind: 'plain'` → `GENERAL` type.
    */
-  secretNames: string[];
+  variables: AppPlatformVariable[];
   /** Optional HTTP healthcheck path; if omitted, App Platform falls back to TCP probe. */
   healthCheckPath?: string;
+}
+
+/**
+ * One resolved variable destined for App Platform's `envs[]` array on a service.
+ * Values are plaintext at this point — they came from the encrypted vault and
+ * App Platform re-encrypts SECRET entries on its side.
+ */
+export interface AppPlatformVariable {
+  key: string;
+  value: string;
+  kind: 'plain' | 'secret';
 }
 
 export interface AppPlatformAppArgs {
@@ -156,7 +163,7 @@ export class AppPlatformApp extends pulumi.ComponentResource {
         ? { healthCheck: { httpPath: service.healthCheckPath } }
         : {}),
       ...(service.routes.length > 0 ? { routes: service.routes } : {}),
-      envs: this.buildServiceEnvs(service.envVars, service.secretNames, projectName, environmentName),
+      envs: this.buildServiceEnvs(service.variables, projectName, environmentName),
     };
   }
 
@@ -180,35 +187,27 @@ export class AppPlatformApp extends pulumi.ComponentResource {
   }
 
   private buildServiceEnvs(
-    envVars: Record<string, string>,
-    secretNames: string[],
+    variables: AppPlatformVariable[],
     projectName: string,
     environmentName: string,
   ): digitalocean.types.input.AppSpecServiceEnv[] {
-    const generalEnvs = Object.entries(envVars).map(([key, value]) => ({
-      key,
-      value,
-      scope: 'RUN_TIME',
-      type: 'GENERAL',
-    }));
+    // Liftoff-managed metadata vars — auto-injected so apps can self-identify in
+    // logs/error reporting without hard-coding. User-defined variables of the
+    // same name (rare) override these because the resolver de-dupes on key.
+    const liftoffMeta = new Map<string, digitalocean.types.input.AppSpecServiceEnv>([
+      ['LIFTOFF_PROJECT', { key: 'LIFTOFF_PROJECT', value: projectName, scope: 'RUN_TIME', type: 'GENERAL' }],
+      ['LIFTOFF_ENVIRONMENT', { key: 'LIFTOFF_ENVIRONMENT', value: environmentName, scope: 'RUN_TIME', type: 'GENERAL' }],
+    ]);
 
-    // Phase 1: secret values are not yet stored in Liftoff's vault, so we set
-    // value === key as a placeholder. App Platform's UI lets the user fill these in.
-    // Phase 2 (vault) resolves the real values at deploy time.
-    const secretEnvs = secretNames.map((secretName) => ({
-      key: secretName,
-      value: secretName,
-      scope: 'RUN_TIME',
-      type: 'SECRET',
-    }));
+    for (const variable of variables) {
+      liftoffMeta.set(variable.key, {
+        key: variable.key,
+        value: variable.value,
+        scope: 'RUN_TIME',
+        type: variable.kind === 'secret' ? 'SECRET' : 'GENERAL',
+      });
+    }
 
-    // Inject INTERNAL_LIFTOFF_PROJECT and INTERNAL_LIFTOFF_ENV so apps can
-    // self-identify in logs / error reporting without us hard-coding it.
-    const liftoffMeta = [
-      { key: 'LIFTOFF_PROJECT', value: projectName, scope: 'RUN_TIME', type: 'GENERAL' as const },
-      { key: 'LIFTOFF_ENVIRONMENT', value: environmentName, scope: 'RUN_TIME', type: 'GENERAL' as const },
-    ];
-
-    return [...liftoffMeta, ...generalEnvs, ...secretEnvs];
+    return Array.from(liftoffMeta.values());
   }
 }

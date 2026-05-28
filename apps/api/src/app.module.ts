@@ -23,6 +23,7 @@ import { RepositoriesModule } from './repositories/repositories.module';
 import { ServicesModule } from './services/services.module';
 import { UploadModule } from './upload/upload.module';
 import { UsersModule } from './users/users.module';
+import { VariablesModule } from './variables/variables.module';
 import { WebhooksModule } from './webhooks/webhooks.module';
 import { PipelineModule } from './pipeline/pipeline.module';
 import { CanvasModule } from './canvas/canvas.module';
@@ -95,6 +96,7 @@ import { CanvasModule } from './canvas/canvas.module';
     EnvironmentsModule,
     RepositoriesModule,
     ServicesModule,
+    VariablesModule,
     DeploymentsModule,
     DOAccountsModule,
     InfrastructureModule,

@@ -550,13 +550,30 @@ All 12 open questions resolved with defaults below. Rationale recorded next to e
 6. API logs show two `deploy-complete` callbacks; bundle aggregates; one `pulumi up` patches the App spec to include both services
 7. App Platform live URL serves both services at their respective paths (`/` and `/api`)
 
-### Phase 2 — Vault
+### Phase 2 — Vault — **SHIPPED**
 
 | # | Decision | Resolved |
 |---|---|---|
 | P2.1 | Vault backend: encrypted Postgres column via `EncryptionService` | ✅ Same pattern as `DOAccount.doToken`; zero new infra deps; can swap behind interface later |
 | P2.2 | Variable inheritance: env-level cascades into every service, per-service overrides | ✅ Matches K8s/Docker model; lets `NODE_ENV=production` be set once per env |
-| P2.3 | Secret redaction: write-only after creation, "rotate" button instead of reveal | ✅ Matches GitHub/CI norms; avoids shared-screen leaks |
+| P2.3 | Secret redaction: write-only after creation, "Change value" replaces value | ✅ Matches GitHub/CI norms; avoids shared-screen leaks |
+
+#### What landed in Phase 2
+
+- Prisma: `EnvironmentVariable` + `ServiceVariable` (encrypted values, scope+kind enums, audit `createdBy` + `lastRotatedAt`); migration `20260528124721_phase_2_variables_vault`.
+- **VariablesModule** with env-scoped + service-scoped CRUD: `GET/POST/PATCH/DELETE /environments/:eid/variables`, same shape for `/services/:sid/variables`. Bulk import at `POST /…/variables/import` parses pasted `.env` blobs. Resolved view at `GET /services/:sid/variables/resolved` shows env+service merged with SECRETs redacted.
+- **`POST /environments/:eid/variables/apply`** — atomic Pulumi up reusing each service's most recent SUCCESS image (no rebuild). App Platform restarts containers in place; ~30s vs ~5min for a full deploy.
+- Pulumi integration: `AppPlatformServiceSpec.variables: AppPlatformVariable[]` replaces the prior `envVars` + `secretNames` shape. Real secret values now reach the App spec (DO re-encrypts on their side); placeholder behaviour removed.
+- GitHub Actions secret sync: every BUILD or BOTH-scope variable upserts `LIFTOFF_BUILD_<KEY>` Actions secret on the connected repo. Workflow generator emits an `env:` block + `--build-arg KEY` / `--env KEY=$KEY` lines per BUILD var so Docker / Nixpacks see them at build time. Stale `LIFTOFF_BUILD_*` secrets are auto-cleaned on every sync.
+- Frontend: `useEnvironmentVariables` / `useServiceVariables` / `useResolvedVariables` / `useApplyVariables` / `useBulkImport*` hooks. **Drawer Variables tab** fully rewritten with two sections (Shared / Service-only), inline new-variable form, scope+kind badges, edit/delete per row, Raw Editor modal that parses pasted `.env` blocks, and **"Save & Apply Now"** button.
+- `.env.example` detection: `POST /projects/:pid/repository/scan-env-example {branch, sourceDir?}` returns parsed keys + default values + inline comment hints. Tries `.env.example`, `.env.sample`, `.env.template` in turn. Frontend `useScanEnvExample` hook ready; onboarding modal integration is a small UI follow-up.
+
+#### Phase 2 caveats
+
+- **Build-var key collisions across services**: if two services have BUILD vars with the same key but different values, the last-written value wins (only one Actions secret per name). Workaround: name-prefix per service. Per-service secret namespacing is Phase 2.5.
+- **Linked variables** (`${{ services.X.internal_url }}` / `${{ resources.db.uri }}`): syntax recognized but no resolver yet. Phase 2.5.
+- **`.env.example` UI integration**: backend + hook ship, the onboarding modal step (auto-prompt after repo selection) is queued as a small follow-up.
+- **Encryption key rotation**: if `ENCRYPTION_KEY` changes after vars exist, all values become unreadable. No auto re-encrypt tool in Phase 2 — build a migration script if needed.
 
 ### Phase 5 — Smart defaults / static sites
 

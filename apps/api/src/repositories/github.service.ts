@@ -239,6 +239,95 @@ export class GitHubService {
   }
 
   /**
+   * Lists Actions secret names on a repository. Values are never returned by
+   * the GitHub API (they're encrypted) — this is for enumerating which keys
+   * exist so we can clean up stale `LIFTOFF_BUILD_*` entries.
+   */
+  public async listActionsSecrets(
+    githubToken: string,
+    fullName: string,
+  ): Promise<string[]> {
+    const names: string[] = [];
+    let page = 1;
+    while (true) {
+      const { data } = await this.request<{ secrets: Array<{ name: string }> }>(
+        {
+          method: 'GET',
+          url: `/repos/${fullName}/actions/secrets`,
+          params: { per_page: 100, page },
+        },
+        githubToken,
+      );
+      for (const secret of data.secrets ?? []) {
+        names.push(secret.name);
+      }
+      if (!data.secrets || data.secrets.length < 100) break;
+      page += 1;
+    }
+    return names;
+  }
+
+  /**
+   * Deletes a repository Actions secret. 404 is swallowed (already gone).
+   */
+  public async deleteActionsSecret(
+    githubToken: string,
+    fullName: string,
+    secretName: string,
+  ): Promise<void> {
+    try {
+      await this.request(
+        {
+          method: 'DELETE',
+          url: `/repos/${fullName}/actions/secrets/${encodeURIComponent(secretName)}`,
+        },
+        githubToken,
+      );
+    } catch (error) {
+      if (this.isHttpStatus(error, 404)) return;
+      throw error;
+    }
+  }
+
+  /**
+   * Fetches the raw UTF-8 contents of one file on a branch. Returns null on 404
+   * so callers can probe multiple candidate filenames without try/catch boilerplate.
+   * Used by `.env.example` detection (P2.8).
+   */
+  public async fetchFileContent(
+    githubToken: string,
+    fullName: string,
+    path: string,
+    branch: string,
+  ): Promise<string | null> {
+    try {
+      const { data } = await this.request<{
+        content?: string;
+        encoding?: string;
+        type?: string;
+      }>(
+        {
+          method: 'GET',
+          url: `/repos/${fullName}/contents/${this.encodeFilePath(path)}`,
+          params: { ref: branch },
+        },
+        githubToken,
+      );
+
+      if (data.type !== 'file' || typeof data.content !== 'string') return null;
+
+      const encoding = data.encoding ?? 'base64';
+      if (encoding === 'base64') {
+        return Buffer.from(data.content, 'base64').toString('utf8');
+      }
+      return data.content;
+    } catch (error) {
+      if (this.isHttpStatus(error, 404)) return null;
+      throw error;
+    }
+  }
+
+  /**
    * Creates or updates a file in a GitHub repository by committing to a branch.
    */
   public async commitFile(

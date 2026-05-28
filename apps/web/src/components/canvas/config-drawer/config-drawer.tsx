@@ -69,6 +69,12 @@ export function ConfigDrawer({
               Variables
             </TabsTrigger>
             <TabsTrigger
+              value="logs"
+              className="rounded-none border-b-2 border-transparent bg-transparent px-0 pb-3 pt-0 text-base text-muted-foreground shadow-none data-[state=active]:border-foreground data-[state=active]:bg-transparent data-[state=active]:text-foreground data-[state=active]:shadow-none"
+            >
+              Logs
+            </TabsTrigger>
+            <TabsTrigger
               value="metrics"
               className="rounded-none border-b-2 border-transparent bg-transparent px-0 pb-3 pt-0 text-base text-muted-foreground shadow-none data-[state=active]:border-foreground data-[state=active]:bg-transparent data-[state=active]:text-foreground data-[state=active]:shadow-none"
             >

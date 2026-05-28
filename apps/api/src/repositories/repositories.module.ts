@@ -8,6 +8,11 @@ import { WorkflowGeneratorService } from './workflow-generator.service';
 
 /**
  * Repository integration module for GitHub connection management.
+ *
+ * NOTE: VariablesModule imports this via forwardRef so it can call
+ * `syncBuildVariablesForEnvironment` / `syncWorkflowForEnvironment` on every
+ * variable mutation. Don't reach into VariablesService from here — the cycle
+ * is broken by querying Prisma directly (see `collectBuildVariableKeys` etc).
  */
 @Module({
   imports: [HttpModule, ProjectsModule],

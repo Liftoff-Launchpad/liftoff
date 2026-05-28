@@ -26,9 +26,11 @@ import {
   QUEUE_TIMEOUTS,
   QUEUE_NAMES,
 } from '../queues/queue.constants';
+import { VariablesService } from '../variables/variables.service';
 import { PulumiRunnerService } from './pulumi-runner.service';
 import {
   AppPlatformStackArgs,
+  AppPlatformVariable,
   PulumiLogLevel,
   PulumiResourceProgress,
   PulumiStackOutputs,
@@ -99,6 +101,7 @@ export class InfrastructureProcessor extends WorkerHost {
     private readonly doApiService: DoApiService,
     private readonly pulumiRunnerService: PulumiRunnerService,
     private readonly eventsGateway: EventsGateway,
+    private readonly variablesService: VariablesService,
   ) {
     super();
   }
@@ -143,6 +146,7 @@ export class InfrastructureProcessor extends WorkerHost {
     const serviceImages = job.data.bundleId
       ? await this.resolveServiceImagesFromBundle(job.data.bundleId)
       : this.resolveServiceImagesSingle(config, job.data.imageUri);
+    const serviceVariables = await this.resolveServiceVariablesForEnv(deployment.environment.id);
 
     const stackArgs: AppPlatformStackArgs = {
       projectName: deployment.environment.project.name,
@@ -153,6 +157,7 @@ export class InfrastructureProcessor extends WorkerHost {
       doToken,
       config,
       serviceImages,
+      serviceVariables,
     };
 
     const runResult = await this.runProvisionWithTimeout(deployment.id, {
@@ -301,6 +306,31 @@ export class InfrastructureProcessor extends WorkerHost {
   }
 
   /**
+   * Resolves runtime variables (vault env-scoped + service-scoped) for every
+   * Service in the env. Returns a map keyed by service name — matches what
+   * `AppPlatformStackArgs.serviceVariables` expects.
+   */
+  private async resolveServiceVariablesForEnv(
+    environmentId: string,
+  ): Promise<Record<string, AppPlatformVariable[]>> {
+    const services = await this.prismaService.service.findMany({
+      where: { environmentId, deletedAt: null },
+      select: { id: true, name: true },
+    });
+
+    const result: Record<string, AppPlatformVariable[]> = {};
+    for (const service of services) {
+      const entries = await this.variablesService.resolveRuntimeVariablesForService(service.id);
+      result[service.name] = entries.map((entry) => ({
+        key: entry.key,
+        value: entry.value ?? '',
+        kind: entry.kind === 'SECRET' ? 'secret' : 'plain',
+      }));
+    }
+    return result;
+  }
+
+  /**
    * Reads a DeploymentBundle's per-Service Deployments and builds the
    * `serviceName → imageUri` map the Pulumi component expects.
    */
@@ -342,6 +372,7 @@ export class InfrastructureProcessor extends WorkerHost {
     const config = this.resolveDestroyConfig(environment);
     const imageUri = await this.resolveImageUri(environment, doToken);
     const serviceImages = this.resolveServiceImagesSingle(config, imageUri);
+    const serviceVariables = await this.resolveServiceVariablesForEnv(environment.id);
 
     const stackArgs: AppPlatformStackArgs = {
       projectName: environment.project.name,
@@ -352,6 +383,7 @@ export class InfrastructureProcessor extends WorkerHost {
       doToken,
       config,
       serviceImages,
+      serviceVariables,
     };
 
     await this.pulumiRunnerService.destroy({

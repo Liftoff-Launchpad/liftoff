@@ -55,6 +55,8 @@ describe('WorkflowGeneratorService', () => {
     expect(workflow).toContain('https://liftoff.example.com/api/v1/webhooks/deploy-complete');
     expect(workflow).toContain('secrets.LIFTOFF_DEPLOY_SECRET');
     expect(workflow).toContain('\\"serviceName\\":\\"$SERVICE_NAME\\"');
+    // No BUILD vars passed → no LIFTOFF_BUILD_* env mappings
+    expect(workflow).not.toContain('secrets.LIFTOFF_BUILD_');
   });
 
   it('emits one matrix entry per service for multi-service envs', async () => {
@@ -86,5 +88,33 @@ describe('WorkflowGeneratorService', () => {
     expect(workflow).toContain('- name: "api"');
     expect(workflow).toContain('imageRepository: "monorepo/production/web"');
     expect(workflow).toContain('imageRepository: "monorepo/production/api"');
+  });
+
+  it('exposes BUILD-scope variable keys as Actions secret env mappings + build args', async () => {
+    const workflow = await service.generate({
+      projectName: 'my-app',
+      environmentId: 'env-1',
+      branch: 'main',
+      liftoffApiUrl: 'https://liftoff.example.com',
+      services: [
+        {
+          name: 'web',
+          context: '.',
+          dockerfilePath: 'Dockerfile',
+          buildStrategy: 'auto',
+          imageRepository: 'my-app/production',
+        },
+      ],
+      buildVariableKeys: ['NEXT_PUBLIC_API_URL', 'STRIPE_PK'],
+      doToken: 'dop_v1_token',
+    });
+
+    expect(workflow).toContain('NEXT_PUBLIC_API_URL: ${{ secrets.LIFTOFF_BUILD_NEXT_PUBLIC_API_URL }}');
+    expect(workflow).toContain('STRIPE_PK: ${{ secrets.LIFTOFF_BUILD_STRIPE_PK }}');
+    expect(workflow).toContain('DOCKER_BUILD_ARGS=""');
+    expect(workflow).toContain('NIXPACKS_ENV_ARGS=""');
+    expect(workflow).toContain('--build-arg NEXT_PUBLIC_API_URL');
+    expect(workflow).toContain('--build-arg STRIPE_PK');
+    expect(workflow).toContain('--env NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}');
   });
 });

@@ -13,6 +13,7 @@ import { EncryptionService } from '../common/services/encryption.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { ProjectsService } from '../projects/projects.service';
 import { ConnectRepositoryDto } from './dto/connect-repository.dto';
+import { ScanEnvExampleDto, ScanEnvExampleResult } from './dto/scan-env-example.dto';
 import { GitHubRepo, GitHubService } from './github.service';
 import {
   ServiceBuildSpec,
@@ -280,6 +281,130 @@ export class RepositoriesService implements OnModuleInit {
   }
 
   /**
+   * Scans a GitHub repo branch for `.env.example` (or `.env.sample` / `.env.template`)
+   * under the given source dir. Returns the parsed list of keys with optional
+   * default values + inline comment hints so the onboarding UI can pre-populate
+   * a "fill in your env vars" step before the first deploy.
+   *
+   * Tries each candidate filename in order; returns the first hit. If nothing
+   * matches, returns `{ foundAt: null, keys: [] }`.
+   */
+  public async scanEnvExample(
+    projectId: string,
+    userId: string,
+    dto: ScanEnvExampleDto,
+  ): Promise<ScanEnvExampleResult> {
+    await this.projectsService.assertProjectRole(projectId, userId);
+
+    const repository = await this.prismaService.repository.findUnique({
+      where: { projectId },
+      select: { fullName: true },
+    });
+    if (!repository) {
+      throw Exceptions.badRequest(
+        'Project has no connected repository to scan',
+        ErrorCodes.REPOSITORY_NOT_FOUND,
+      );
+    }
+
+    const githubToken = await this.getDecryptedGitHubTokenOrThrow(userId);
+    const sourceDir = this.normalizeSourceDir(dto.sourceDir);
+    const candidates = ['.env.example', '.env.sample', '.env.template'].map((name) =>
+      sourceDir ? `${sourceDir}/${name}` : name,
+    );
+
+    for (const path of candidates) {
+      const content = await this.githubService.fetchFileContent(
+        githubToken,
+        repository.fullName,
+        path,
+        dto.branch,
+      );
+      if (content === null) continue;
+      return { foundAt: path, keys: this.parseEnvExample(content) };
+    }
+
+    return { foundAt: null, keys: [] };
+  }
+
+  private normalizeSourceDir(sourceDir: string | undefined): string {
+    if (!sourceDir) return '';
+    const trimmed = sourceDir.replace(/^\.\/+/, '').replace(/\/+$/, '');
+    if (!trimmed || trimmed === '.') return '';
+    return trimmed;
+  }
+
+  /**
+   * Parses .env-style content. For each `KEY=value` line emits {key, defaultValue, hint}
+   * where `hint` is any preceding `# comment` line (treated as documentation for the key).
+   * Blank lines and inline comments are skipped. Quotes are stripped from values.
+   *
+   * This is intentionally NOT shared with VariablesService.parseEnvFile because the
+   * goals differ — that parser is strict (rejects invalid keys), this one captures
+   * hints + default values for UX purposes.
+   */
+  private parseEnvExample(content: string): Array<{
+    key: string;
+    defaultValue: string | null;
+    hint: string | null;
+  }> {
+    const out: Array<{ key: string; defaultValue: string | null; hint: string | null }> = [];
+    const lines = content.split(/\r?\n/);
+    let pendingHint: string | null = null;
+
+    for (const rawLine of lines) {
+      const trimmed = rawLine.trim();
+
+      if (!trimmed) {
+        pendingHint = null;
+        continue;
+      }
+
+      if (trimmed.startsWith('#')) {
+        pendingHint = trimmed.replace(/^#+\s*/, '').trim() || null;
+        continue;
+      }
+
+      const line = trimmed.startsWith('export ') ? trimmed.slice('export '.length).trim() : trimmed;
+      const eqIdx = line.indexOf('=');
+      if (eqIdx <= 0) {
+        pendingHint = null;
+        continue;
+      }
+
+      const key = line.slice(0, eqIdx).trim();
+      let value: string | null = line.slice(eqIdx + 1).trim();
+
+      // strip inline `# comment` only outside quotes
+      if (!value.startsWith('"') && !value.startsWith("'")) {
+        const hashIdx = value.indexOf(' #');
+        if (hashIdx >= 0) value = value.slice(0, hashIdx).trimEnd();
+      }
+
+      if (
+        (value.startsWith('"') && value.endsWith('"')) ||
+        (value.startsWith("'") && value.endsWith("'"))
+      ) {
+        value = value.slice(1, -1);
+      }
+
+      if (!/^[A-Z_][A-Z0-9_]*$/.test(key)) {
+        pendingHint = null;
+        continue;
+      }
+
+      out.push({
+        key,
+        defaultValue: value === '' ? null : value,
+        hint: pendingHint,
+      });
+      pendingHint = null;
+    }
+
+    return out;
+  }
+
+  /**
    * Returns the currently connected project repository, if any.
    */
   public async findByProject(projectId: string, userId: string): Promise<ConnectedRepository | null> {
@@ -347,12 +472,14 @@ export class RepositoriesService implements OnModuleInit {
       environment.project.name,
       environment.name,
     );
+    const buildVariableKeys = await this.collectBuildVariableKeys(environment.id);
     const workflowContent = await this.workflowGeneratorService.generate({
       projectName: environment.project.name,
       environmentId: environment.id,
       branch: repository.branch,
       liftoffApiUrl: this.getWebhookBaseUrl(),
       services: serviceBuildSpecs,
+      buildVariableKeys,
       doToken,
       doAccountId: environment.doAccountId,
     });
@@ -364,13 +491,148 @@ export class RepositoriesService implements OnModuleInit {
       workflowContent,
       `chore: sync Liftoff deploy workflow (${serviceBuildSpecs.length} service${
         serviceBuildSpecs.length === 1 ? '' : 's'
-      })`,
+      }, ${buildVariableKeys.length} build var${buildVariableKeys.length === 1 ? '' : 's'})`,
       repository.branch,
     );
 
     this.logger.log(
-      `Synced workflow file for env ${environmentId} (${serviceBuildSpecs.length} services)`,
+      `Synced workflow file for env ${environmentId} (${serviceBuildSpecs.length} services, ${buildVariableKeys.length} build vars)`,
     );
+  }
+
+  /**
+   * Pushes every BUILD or BOTH-scope variable in the env to GitHub Actions secrets
+   * as `LIFTOFF_BUILD_<KEY>`. Service-scope overrides env-scope on shared keys.
+   * Stale `LIFTOFF_BUILD_*` secrets whose key no longer exists in the vault are removed.
+   *
+   * No-op when the project has no connected repository.
+   *
+   * Phase 2 limitation: if two services have different BUILD values for the same key,
+   * only one is retained (last write wins). Per-service secret namespacing is Phase 2.5.
+   */
+  public async syncBuildVariablesForEnvironment(
+    environmentId: string,
+    userId: string,
+  ): Promise<void> {
+    const environment = await this.prismaService.environment.findFirst({
+      where: { id: environmentId, deletedAt: null },
+      select: {
+        id: true,
+        project: { select: { repository: { select: { fullName: true } } } },
+      },
+    });
+    if (!environment) {
+      throw Exceptions.notFound('Environment not found', ErrorCodes.ENVIRONMENT_NOT_FOUND);
+    }
+    const repository = environment.project.repository;
+    if (!repository) {
+      this.logger.log(
+        `syncBuildVariablesForEnvironment: skipping env ${environmentId} (no connected repository)`,
+      );
+      return;
+    }
+
+    const githubToken = await this.getDecryptedGitHubTokenOrThrow(userId);
+
+    const envBuildRows = await this.prismaService.environmentVariable.findMany({
+      where: { environmentId, scope: { in: ['BUILD', 'BOTH'] } },
+    });
+    const serviceBuildRows = await this.prismaService.serviceVariable.findMany({
+      where: {
+        service: { environmentId, deletedAt: null },
+        scope: { in: ['BUILD', 'BOTH'] },
+      },
+    });
+
+    const desired = new Map<string, string>();
+    for (const row of envBuildRows) {
+      try {
+        desired.set(row.key, this.encryptionService.decrypt(row.encryptedValue));
+      } catch {
+        this.logger.warn(`Skipping BUILD var ${row.key}: decryption failed`);
+      }
+    }
+    for (const row of serviceBuildRows) {
+      try {
+        desired.set(row.key, this.encryptionService.decrypt(row.encryptedValue));
+      } catch {
+        this.logger.warn(`Skipping BUILD var ${row.key}: decryption failed`);
+      }
+    }
+
+    for (const [key, value] of desired) {
+      try {
+        await this.githubService.upsertActionsSecret(
+          githubToken,
+          repository.fullName,
+          `LIFTOFF_BUILD_${key}`,
+          value,
+        );
+      } catch (error) {
+        this.logger.warn(
+          `Failed to upsert LIFTOFF_BUILD_${key} on ${repository.fullName}: ${
+            error instanceof Error ? error.message : 'unknown error'
+          }`,
+        );
+      }
+    }
+
+    try {
+      const existingSecrets = await this.githubService.listActionsSecrets(
+        githubToken,
+        repository.fullName,
+      );
+      for (const secretName of existingSecrets) {
+        if (!secretName.startsWith('LIFTOFF_BUILD_')) continue;
+        const key = secretName.slice('LIFTOFF_BUILD_'.length);
+        if (!desired.has(key)) {
+          await this.githubService
+            .deleteActionsSecret(githubToken, repository.fullName, secretName)
+            .catch((error) =>
+              this.logger.warn(
+                `Failed to delete stale ${secretName}: ${
+                  error instanceof Error ? error.message : 'unknown error'
+                }`,
+              ),
+            );
+        }
+      }
+    } catch (error) {
+      this.logger.warn(
+        `Failed to list Actions secrets for cleanup on ${repository.fullName}: ${
+          error instanceof Error ? error.message : 'unknown error'
+        }`,
+      );
+    }
+
+    this.logger.log(
+      `Synced ${desired.size} BUILD variables to ${repository.fullName} for env ${environmentId}`,
+    );
+  }
+
+  /**
+   * Returns unique BUILD/BOTH-scope variable keys across env + service vars.
+   * Used by `syncWorkflowForEnvironment` to emit the workflow `env:` block.
+   */
+  private async collectBuildVariableKeys(environmentId: string): Promise<string[]> {
+    const [envRows, serviceRows] = await Promise.all([
+      this.prismaService.environmentVariable.findMany({
+        where: { environmentId, scope: { in: ['BUILD', 'BOTH'] } },
+        select: { key: true },
+      }),
+      this.prismaService.serviceVariable.findMany({
+        where: {
+          service: { environmentId, deletedAt: null },
+          scope: { in: ['BUILD', 'BOTH'] },
+        },
+        select: { key: true },
+      }),
+    ]);
+
+    const keys = new Set<string>();
+    for (const row of envRows) keys.add(row.key);
+    for (const row of serviceRows) keys.add(row.key);
+    return Array.from(keys).sort();
   }
 
   private decryptSecret(encryptedSecret: string): string {
