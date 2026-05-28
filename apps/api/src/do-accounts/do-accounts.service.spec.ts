@@ -44,6 +44,7 @@ describe('DOAccountsService', () => {
     },
     environment: {
       findMany: jest.fn(),
+      deleteMany: jest.fn(),
     },
   };
 
@@ -143,15 +144,43 @@ describe('DOAccountsService', () => {
 
   it('delete blocks removal when account is used by active environments', async () => {
     prismaServiceMock.dOAccount.findFirst.mockResolvedValue(buildDOAccountRecord());
-    prismaServiceMock.environment.findMany.mockResolvedValue([
-      { name: 'production' },
-      { name: 'staging' },
+    prismaServiceMock.environment.findMany.mockResolvedValueOnce([
+      { name: 'production', project: { name: 'liftoff' } },
+      { name: 'staging', project: { name: 'liftoff' } },
     ]);
 
     await expect(service.delete('do-1', 'user-1')).rejects.toThrow(
-      'DigitalOcean account is in use by environments: production, staging',
+      'DigitalOcean account is in use by environments: liftoff/production, liftoff/staging',
     );
     expect(prismaServiceMock.dOAccount.delete).not.toHaveBeenCalled();
+    expect(prismaServiceMock.environment.deleteMany).not.toHaveBeenCalled();
+  });
+
+  it('delete cleans orphan environments (soft-deleted project/env) before removing the account', async () => {
+    prismaServiceMock.dOAccount.findFirst.mockResolvedValue(buildDOAccountRecord());
+    prismaServiceMock.environment.findMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ id: 'env-orphan-1' }, { id: 'env-orphan-2' }]);
+    prismaServiceMock.environment.deleteMany.mockResolvedValue({ count: 2 });
+    prismaServiceMock.dOAccount.delete.mockResolvedValue(buildDOAccountRecord());
+
+    await service.delete('do-1', 'user-1');
+
+    expect(prismaServiceMock.environment.deleteMany).toHaveBeenCalledWith({
+      where: { id: { in: ['env-orphan-1', 'env-orphan-2'] } },
+    });
+    expect(prismaServiceMock.dOAccount.delete).toHaveBeenCalledWith({ where: { id: 'do-1' } });
+  });
+
+  it('delete succeeds without cleanup when no environments reference the account', async () => {
+    prismaServiceMock.dOAccount.findFirst.mockResolvedValue(buildDOAccountRecord());
+    prismaServiceMock.environment.findMany.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
+    prismaServiceMock.dOAccount.delete.mockResolvedValue(buildDOAccountRecord());
+
+    await service.delete('do-1', 'user-1');
+
+    expect(prismaServiceMock.environment.deleteMany).not.toHaveBeenCalled();
+    expect(prismaServiceMock.dOAccount.delete).toHaveBeenCalledWith({ where: { id: 'do-1' } });
   });
 
   it('getDecryptedToken returns decrypted token for internal use', async () => {

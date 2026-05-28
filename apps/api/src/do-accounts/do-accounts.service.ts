@@ -1,6 +1,7 @@
 import type { DOAccount } from '@prisma/client';
+import { Prisma } from '@prisma/client';
 import { ErrorCodes } from '@liftoff/shared';
-import { HttpStatus, Injectable } from '@nestjs/common';
+import { HttpStatus, Injectable, Logger } from '@nestjs/common';
 import { Exceptions } from '../common/exceptions/app.exception';
 import { EncryptionService } from '../common/services/encryption.service';
 import { DoApiService } from '../do-api/do-api.service';
@@ -27,6 +28,8 @@ type ValidationResult = {
  */
 @Injectable()
 export class DOAccountsService {
+  private readonly logger = new Logger(DOAccountsService.name);
+
   public constructor(
     private readonly prismaService: PrismaService,
     private readonly doApiService: DoApiService,
@@ -128,7 +131,11 @@ export class DOAccountsService {
   }
 
   /**
-   * Deletes a DigitalOcean account if no active environments depend on it.
+   * Deletes a DigitalOcean account. Active envs (project + env both not
+   * soft-deleted) block the delete with a clean 409. Orphan envs left behind
+   * by prior soft-deletes still hold the do_account FK in Postgres, so we
+   * hard-delete those first (cascades to deployments, bundles, stacks) — they're
+   * invisible to the UI anyway. Any residual FK violation surfaces as 409, not 500.
    */
   public async delete(id: string, userId: string): Promise<void> {
     await this.getAccountOrThrow(id, userId);
@@ -144,22 +151,51 @@ export class DOAccountsService {
       },
       select: {
         name: true,
+        project: { select: { name: true } },
       },
     });
 
     if (activeEnvironments.length > 0) {
-      const environmentNames = activeEnvironments.map((environment) => environment.name).join(', ');
+      const environmentNames = activeEnvironments
+        .map((environment) => `${environment.project.name}/${environment.name}`)
+        .join(', ');
       throw Exceptions.conflict(
-        `DigitalOcean account is in use by environments: ${environmentNames}`,
+        `DigitalOcean account is in use by environments: ${environmentNames}. Delete those environments first.`,
         ErrorCodes.VALIDATION_ERROR,
       );
     }
 
-    await this.prismaService.dOAccount.delete({
+    const orphanEnvironments = await this.prismaService.environment.findMany({
       where: {
-        id,
+        doAccountId: id,
+        OR: [{ deletedAt: { not: null } }, { project: { deletedAt: { not: null } } }],
       },
+      select: { id: true },
     });
+
+    if (orphanEnvironments.length > 0) {
+      await this.prismaService.environment.deleteMany({
+        where: { id: { in: orphanEnvironments.map((environment) => environment.id) } },
+      });
+      this.logger.log(
+        `Cleaned ${orphanEnvironments.length} orphan environment(s) referencing DO account ${id} before delete`,
+      );
+    }
+
+    try {
+      await this.prismaService.dOAccount.delete({ where: { id } });
+    } catch (error) {
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        (error.code === 'P2003' || error.code === 'P2014')
+      ) {
+        throw Exceptions.conflict(
+          'DigitalOcean account still has dependent resources. Please remove related environments and try again.',
+          ErrorCodes.VALIDATION_ERROR,
+        );
+      }
+      throw error;
+    }
   }
 
   /**

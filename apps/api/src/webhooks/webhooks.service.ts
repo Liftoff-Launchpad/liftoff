@@ -58,6 +58,13 @@ export interface DeployCompletePayload {
   runUrl?: string;
   buildStrategy?: 'dockerfile' | 'nixpacks' | string;
   buildPlan?: string;
+  /**
+   * Base64-encoded tail of the workflow's stdout+stderr. Sent on every callback
+   * so failures show the actual build error in the UI; on success we still
+   * persist it so users can audit warnings/timings. Decoded + chunked into
+   * DeploymentLog rows on the failure path.
+   */
+  buildLogsBase64?: string;
 }
 
 /**
@@ -336,19 +343,33 @@ export class WebhooksService {
     // an image. We still record runUrl / strategy so the UI can deep-link to
     // the failed GitHub Actions run.
     if (isFailure) {
+      const decodedLogs = this.decodeBuildLogs(payload.buildLogsBase64);
+      const errorTail = decodedLogs ? this.extractErrorTail(decodedLogs) : null;
+
       await this.prismaService.deployment.update({
         where: { id: deployment.id },
         data: {
           status: DeploymentStatus.FAILED,
-          errorMessage: `Build/push ${statusLower} for service "${targetService.name}". GitHub Actions run: ${payload.runUrl || 'unknown'}`,
+          errorMessage: this.buildFailureErrorMessage(
+            statusLower ?? 'failure',
+            targetService.name,
+            payload.runUrl,
+            errorTail,
+          ),
           buildRunUrl: payload.runUrl ?? null,
           buildStrategy: payload.buildStrategy?.toLowerCase() ?? null,
           buildPlan: this.parseBuildPlan(payload.buildPlan),
           completedAt: new Date(),
         },
       });
+
+      if (decodedLogs) {
+        await this.persistBuildLogs(deployment.id, decodedLogs);
+      }
+
       this.logger.warn(
-        `Deployment ${deployment.id} (service ${targetService.name}) ${statusLower} during build/push`,
+        `Deployment ${deployment.id} (service ${targetService.name}) ${statusLower} during build/push` +
+          (errorTail ? ` — ${errorTail.slice(0, 200).replace(/\s+/g, ' ')}` : ''),
       );
       if (deployment.bundleId) {
         await this.finalizeBundleIfReady(deployment.bundleId);
@@ -380,6 +401,11 @@ export class WebhooksService {
         status: DeploymentStatus.PUSHING,
       },
     });
+
+    const successLogs = this.decodeBuildLogs(payload.buildLogsBase64);
+    if (successLogs) {
+      await this.persistBuildLogs(deployment.id, successLogs);
+    }
 
     if (deployment.bundleId) {
       await this.finalizeBundleIfReady(deployment.bundleId);
@@ -623,6 +649,96 @@ export class WebhooksService {
     }
 
     return null;
+  }
+
+  /**
+   * Decodes the base64 build-log payload from the GitHub Actions Notify step.
+   * Returns null when missing or malformed (we never want a bad payload to
+   * 500 the webhook — the deploy state update matters more than the logs).
+   */
+  private decodeBuildLogs(base64?: string): string | null {
+    if (!base64) return null;
+    try {
+      const decoded = Buffer.from(base64, 'base64').toString('utf8');
+      return decoded.length > 0 ? decoded : null;
+    } catch (error) {
+      this.logger.warn(`Failed to decode buildLogsBase64: ${(error as Error).message}`);
+      return null;
+    }
+  }
+
+  /**
+   * Extracts the last meaningful chunk of build output for the deployment's
+   * one-line errorMessage summary. Looks for the last "ERROR" / "FAILED" /
+   * "error:" / Docker error marker; falls back to the last non-empty line.
+   */
+  private extractErrorTail(logs: string): string | null {
+    const lines = logs
+      .split(/\r?\n/)
+      .map((line) => line.replace(/^##\[[^\]]+\]\s*/, '').trim())
+      .filter((line) => line.length > 0);
+    if (lines.length === 0) return null;
+
+    const errorPattern = /(error|failed|fatal|aborted|cannot|missing|not found|denied)/i;
+    for (let i = lines.length - 1; i >= Math.max(0, lines.length - 50); i--) {
+      const candidate = lines[i];
+      if (candidate && errorPattern.test(candidate)) {
+        return candidate.slice(0, 500);
+      }
+    }
+    const last = lines[lines.length - 1];
+    return last ? last.slice(0, 500) : null;
+  }
+
+  /**
+   * Compose a one-line `Deployment.errorMessage`. Used by the failed-state UI
+   * (and the "FAILED" toast) so users see a real diagnostic without opening
+   * the logs tab. Falls back to the legacy generic message when no logs.
+   */
+  private buildFailureErrorMessage(
+    status: string,
+    serviceName: string,
+    runUrl: string | undefined,
+    errorTail: string | null,
+  ): string {
+    const base = `Build/push ${status} for service "${serviceName}".`;
+    const tail = errorTail ? ` Last error: ${errorTail}` : '';
+    const link = runUrl ? ` GitHub Actions run: ${runUrl}` : '';
+    return `${base}${tail}${link}`;
+  }
+
+  /**
+   * Splits the captured workflow output into per-line DeploymentLog rows with
+   * source="build". Chunks to avoid one giant row blowing past Postgres TEXT
+   * read perf or the UI's render budget. Errors persisting are logged but not
+   * thrown — losing logs shouldn't fail the webhook.
+   */
+  private async persistBuildLogs(deploymentId: string, logs: string): Promise<void> {
+    const lines = logs.split(/\r?\n/).filter((line) => line.length > 0);
+    if (lines.length === 0) return;
+
+    const baseTime = Date.now();
+    const rows = lines.map((line, index) => {
+      const isError = /\b(error|failed|fatal|denied|aborted)\b/i.test(line);
+      return {
+        deploymentId,
+        // Strip GitHub Actions workflow command markers (`##[group]`, `##[endgroup]`,
+        // `##[error]`) since they're noise in our viewer.
+        message: line.replace(/^##\[[^\]]+\]\s*/, ''),
+        level: isError ? ('ERROR' as const) : ('INFO' as const),
+        source: 'build',
+        // Stable monotonic timestamps so the logs render in workflow order.
+        timestamp: new Date(baseTime + index),
+      };
+    });
+
+    try {
+      await this.prismaService.deploymentLog.createMany({ data: rows });
+    } catch (error) {
+      this.logger.warn(
+        `Failed to persist ${rows.length} build log rows for deployment ${deploymentId}: ${(error as Error).message}`,
+      );
+    }
   }
 
   private parseBuildPlan(buildPlan: string | undefined): Prisma.InputJsonValue | undefined {

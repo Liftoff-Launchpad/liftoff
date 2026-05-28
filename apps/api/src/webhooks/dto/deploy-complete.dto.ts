@@ -87,4 +87,17 @@ export class DeployCompleteDto {
   @IsOptional()
   @MaxLength(20000)
   public buildPlan?: string;
+
+  @ApiProperty({
+    description:
+      'Optional base64-encoded tail of /tmp/build.log (workflow stdout+stderr). ' +
+      'Sent by GitHub Actions on every callback so failures surface the actual build ' +
+      'error in the Liftoff UI without the user needing to leave for the Actions tab. ' +
+      'Max ~150KB encoded (~96KB plaintext).',
+    required: false,
+  })
+  @IsString()
+  @IsOptional()
+  @MaxLength(200000)
+  public buildLogsBase64?: string;
 }

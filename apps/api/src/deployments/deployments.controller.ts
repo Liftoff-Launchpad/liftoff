@@ -60,6 +60,21 @@ export class DeploymentsController {
   }
 
   /**
+   * Returns the most recent deployment for a service plus its persisted logs
+   * (build + pulumi). Drives the "Last build output" panel in the canvas drawer
+   * so failed builds show their actual error without the user leaving for the
+   * GitHub Actions tab. Returns `null` when the service has never been deployed.
+   */
+  @Get('latest-by-service/:serviceName')
+  public getLatestForService(
+    @Param('environmentId') environmentId: string,
+    @Param('serviceName') serviceName: string,
+    @CurrentUser() user: User,
+  ) {
+    return this.deploymentsService.getLatestServiceDeployment(environmentId, serviceName, user.id);
+  }
+
+  /**
    * Triggers a deployment for an environment.
    */
   @Post()

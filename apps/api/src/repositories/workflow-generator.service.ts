@@ -128,35 +128,63 @@ ${matrixEntries}
           CONFIGURED_DOCKERFILE_PATH: \${{ matrix.service.dockerfilePath }}
           CONFIGURED_DOCKER_CONTEXT: \${{ matrix.service.context }}
 ${buildVarEnvLines}
+        # Capture every command's stdout+stderr to /tmp/build.log via tee. Notify
+        # Liftoff (always-runs) reads the tail of this file so failed builds
+        # surface the actual error in our UI instead of just "FAILED".
         run: |
           set -euo pipefail
+          : > /tmp/build.log
+          exec > >(tee -a /tmp/build.log) 2>&1
 
           BUILD_STRATEGY=""
           BUILD_PLAN=""
 ${buildArgFlagsScript}
 
+          echo "::group::Resolving build strategy"
           # auto-detect: Dockerfile in context wins, otherwise Nixpacks; explicit overrides honored.
           if [ "$CONFIGURED_BUILD_STRATEGY" = "dockerfile" ]; then
             BUILD_STRATEGY="dockerfile"
+            echo "Strategy: dockerfile (explicit) — context=$CONFIGURED_DOCKER_CONTEXT dockerfile=$CONFIGURED_DOCKERFILE_PATH"
+            echo "::endgroup::"
+            echo "::group::docker build"
             docker build $DOCKER_BUILD_ARGS -f "$CONFIGURED_DOCKERFILE_PATH" -t "$IMAGE_URI" "$CONFIGURED_DOCKER_CONTEXT"
+            echo "::endgroup::"
           elif [ "$CONFIGURED_BUILD_STRATEGY" = "nixpacks" ]; then
             BUILD_STRATEGY="nixpacks"
+            echo "Strategy: nixpacks (explicit) — context=$CONFIGURED_DOCKER_CONTEXT"
+            echo "::endgroup::"
+            echo "::group::nixpacks install"
             curl -fsSL https://nixpacks.com/install.sh | bash
             export PATH="$HOME/.local/bin:$PATH"
+            echo "::endgroup::"
+            echo "::group::nixpacks build"
             BUILD_PLAN="$(nixpacks plan "$CONFIGURED_DOCKER_CONTEXT" --format json | tr -d '\\n')"
             nixpacks build "$CONFIGURED_DOCKER_CONTEXT" $NIXPACKS_ENV_ARGS --name "$IMAGE_URI"
+            echo "::endgroup::"
           elif [ -f "$CONFIGURED_DOCKER_CONTEXT/Dockerfile" ]; then
             BUILD_STRATEGY="dockerfile"
+            echo "Strategy: dockerfile (auto-detected) — context=$CONFIGURED_DOCKER_CONTEXT"
+            echo "::endgroup::"
+            echo "::group::docker build"
             docker build $DOCKER_BUILD_ARGS -f "$CONFIGURED_DOCKER_CONTEXT/Dockerfile" -t "$IMAGE_URI" "$CONFIGURED_DOCKER_CONTEXT"
+            echo "::endgroup::"
           else
             BUILD_STRATEGY="nixpacks"
+            echo "Strategy: nixpacks (auto-detected — no Dockerfile in context) — context=$CONFIGURED_DOCKER_CONTEXT"
+            echo "::endgroup::"
+            echo "::group::nixpacks install"
             curl -fsSL https://nixpacks.com/install.sh | bash
             export PATH="$HOME/.local/bin:$PATH"
+            echo "::endgroup::"
+            echo "::group::nixpacks build"
             BUILD_PLAN="$(nixpacks plan "$CONFIGURED_DOCKER_CONTEXT" --format json | tr -d '\\n')"
             nixpacks build "$CONFIGURED_DOCKER_CONTEXT" $NIXPACKS_ENV_ARGS --name "$IMAGE_URI"
+            echo "::endgroup::"
           fi
 
+          echo "::group::docker push"
           docker push "$IMAGE_URI"
+          echo "::endgroup::"
 
           {
             echo "image_uri=$IMAGE_URI"
@@ -175,17 +203,31 @@ ${buildArgFlagsScript}
           IMAGE_URI: \${{ steps.build.outputs.image_uri }}
           BUILD_STRATEGY: \${{ steps.build.outputs.build_strategy }}
           BUILD_PLAN: \${{ steps.build.outputs.build_plan }}
+        # On any outcome we POST to /webhooks/deploy-complete. On failure, we
+        # also slurp the last ~96KB of /tmp/build.log (base64-encoded so JSON-safe)
+        # so the Liftoff UI can show the actual build error without the user having
+        # to leave for the GitHub Actions UI.
         run: |
-          BUILD_PLAN_JSON=""
+          BUILD_PLAN_JSON="null"
           if [ -n "$BUILD_PLAN" ]; then
             BUILD_PLAN_JSON="$(printf '%s' "$BUILD_PLAN" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')"
           fi
 
-          if [ -n "$BUILD_PLAN_JSON" ]; then
-            PAYLOAD="{\\"environmentId\\":\\"${environmentId}\\",\\"serviceName\\":\\"$SERVICE_NAME\\",\\"imageUri\\":\\"$IMAGE_URI\\",\\"commitSha\\":\\"$GITHUB_SHA\\",\\"status\\":\\"$JOB_STATUS\\",\\"runUrl\\":\\"$RUN_URL\\",\\"buildStrategy\\":\\"$BUILD_STRATEGY\\",\\"buildPlan\\":$BUILD_PLAN_JSON}"
-          else
-            PAYLOAD="{\\"environmentId\\":\\"${environmentId}\\",\\"serviceName\\":\\"$SERVICE_NAME\\",\\"imageUri\\":\\"$IMAGE_URI\\",\\"commitSha\\":\\"$GITHUB_SHA\\",\\"status\\":\\"$JOB_STATUS\\",\\"runUrl\\":\\"$RUN_URL\\",\\"buildStrategy\\":\\"$BUILD_STRATEGY\\"}"
+          BUILD_LOGS_B64=""
+          if [ -f /tmp/build.log ]; then
+            # Tail ~96KB so payload stays well under any reasonable JSON body limit.
+            BUILD_LOGS_B64="$(tail -c 98304 /tmp/build.log | base64 -w 0)"
           fi
+
+          BUILD_LOGS_JSON="null"
+          if [ -n "$BUILD_LOGS_B64" ]; then
+            BUILD_LOGS_JSON="\\"$BUILD_LOGS_B64\\""
+          fi
+
+          PAYLOAD=$(cat <<JSONEOF
+          {"environmentId":"${environmentId}","serviceName":"$SERVICE_NAME","imageUri":"$IMAGE_URI","commitSha":"$GITHUB_SHA","status":"$JOB_STATUS","runUrl":"$RUN_URL","buildStrategy":"$BUILD_STRATEGY","buildPlan":$BUILD_PLAN_JSON,"buildLogsBase64":$BUILD_LOGS_JSON}
+          JSONEOF
+          )
 
           curl -X POST ${liftoffApiUrl}/api/v1/webhooks/deploy-complete \\
             -H "X-Liftoff-Secret: \${{ secrets.${LIFTOFF_DEPLOY_SECRET_NAME} }}" \\

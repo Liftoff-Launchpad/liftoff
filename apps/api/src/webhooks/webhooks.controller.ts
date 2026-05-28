@@ -68,6 +68,8 @@ export class WebhooksController {
       runUrl: dto.runUrl,
       buildStrategy: dto.buildStrategy,
       buildPlan: dto.buildPlan,
+      buildLogsBase64:
+        dto.buildLogsBase64 && dto.buildLogsBase64.length > 0 ? dto.buildLogsBase64 : undefined,
     };
 
     await this.webhooksService.handleDeployComplete(payload, secretHeader);
