@@ -24,7 +24,7 @@ import { Spinner } from '@/components/ui/spinner';
 import { TabsContent } from '@/components/ui/tabs';
 import { toast } from '@/components/ui/use-toast';
 import { useRedeployEnvironment, useTriggerBuild } from '@/hooks/queries/use-environments';
-import { useDeleteService } from '@/hooks/queries/use-services';
+import { useDeleteService, useUpdateService } from '@/hooks/queries/use-services';
 import { useStagedChangesStore } from '../staged-changes/staged-changes-store';
 
 interface DrawerSettingsTabProps {
@@ -37,6 +37,8 @@ interface DrawerSettingsTabProps {
   projectId: string;
   instanceSize?: string;
   replicas?: number;
+  /** Current Service.command (start command override). */
+  command?: string | null;
   domains?: string[];
   onAddDomain?: (domain: string) => void;
   onChangeScaling?: (instanceSize: string, replicas: number) => void;
@@ -59,6 +61,7 @@ export function DrawerSettingsTab({
   projectId,
   instanceSize = 'apps-s-1vcpu-0.5gb',
   replicas = 1,
+  command,
   domains = [],
   onAddDomain,
   onChangeScaling,
@@ -68,11 +71,25 @@ export function DrawerSettingsTab({
   const [newDomain, setNewDomain] = useState('');
   const [currentSize, setCurrentSize] = useState(instanceSize);
   const [currentReplicas, setCurrentReplicas] = useState(replicas);
+  const [commandDraft, setCommandDraft] = useState(command ?? '');
 
   const redeployEnv = useRedeployEnvironment(projectId, environmentId);
   const triggerBuild = useTriggerBuild(projectId, environmentId);
   const deleteService = useDeleteService(environmentId, projectId);
+  const updateService = useUpdateService(nodeId, environmentId, projectId);
   const addChange = useStagedChangesStore((s) => s.addChange);
+
+  const handleSaveCommand = async () => {
+    try {
+      await updateService.mutateAsync({ command: commandDraft.trim() || null });
+      toast({
+        title: 'Start command saved',
+        description: 'Rebuild (Deploy now) for it to take effect on the next image.',
+      });
+    } catch {
+      toast({ title: 'Could not save start command', variant: 'destructive' });
+    }
+  };
 
   const handleTriggerBuild = async () => {
     try {
@@ -226,6 +243,32 @@ export function DrawerSettingsTab({
                   </span>
                   Wait for CI
                 </button>
+              </div>
+
+              <div className="space-y-3">
+                <Label htmlFor="svc-start-command" className="text-sm font-semibold">
+                  Start command
+                </Label>
+                <p className="text-sm text-muted-foreground">
+                  Overrides the container start. Set this if the build fails with “No start command
+                  could be found”. Rebuild (Deploy now) for it to take effect.
+                </p>
+                <div className="flex items-center gap-2">
+                  <Input
+                    id="svc-start-command"
+                    placeholder="node server.js"
+                    value={commandDraft}
+                    onChange={(event) => setCommandDraft(event.target.value)}
+                    className="font-mono"
+                  />
+                  <Button
+                    variant="outline"
+                    onClick={handleSaveCommand}
+                    disabled={updateService.isPending || commandDraft === (command ?? '')}
+                  >
+                    Save
+                  </Button>
+                </div>
               </div>
             </div>
           </section>

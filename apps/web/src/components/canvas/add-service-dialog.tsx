@@ -48,6 +48,7 @@ const schema = z.object({
   replicas: z.coerce.number().int().min(1).max(20).default(1),
   routePath: z.string().default(''),
   healthcheckPath: z.string().default(''),
+  command: z.string().default(''),
 });
 
 type FormValues = z.input<typeof schema>;
@@ -83,6 +84,7 @@ export function AddServiceDialog({
       replicas: 1,
       routePath: '',
       healthcheckPath: '',
+      command: '',
     },
   });
 
@@ -101,6 +103,7 @@ export function AddServiceDialog({
         // resolves to "/<name>" for non-first services and a TCP probe respectively.
         ...(values.routePath ? { routePath: values.routePath } : {}),
         ...(values.healthcheckPath ? { healthcheckPath: values.healthcheckPath } : {}),
+        ...(values.command ? { command: values.command } : {}),
       });
       toast({
         title: 'Service added',
@@ -226,6 +229,18 @@ export function AddServiceDialog({
                 {...form.register('healthcheckPath')}
               />
               <p className="text-xs text-muted-foreground">Empty = TCP probe</p>
+            </div>
+
+            <div className="space-y-1 col-span-2">
+              <Label htmlFor="svc-command">Start command</Label>
+              <Input
+                id="svc-command"
+                placeholder="node server.js"
+                {...form.register('command')}
+              />
+              <p className="text-xs text-muted-foreground">
+                Empty = auto-detect. Set this if the build fails with “No start command”.
+              </p>
             </div>
           </div>
 

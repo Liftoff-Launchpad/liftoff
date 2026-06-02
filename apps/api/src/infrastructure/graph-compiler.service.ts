@@ -1,13 +1,15 @@
-import { Connection, Resource } from '@prisma/client';
+import { Connection, Resource, Service } from '@prisma/client';
 import {
   BindingSpec,
   DEFAULT_RESOURCE_SIZE,
   DEFAULT_RESOURCE_VERSION,
   ErrorCodes,
   InjectConfig,
+  type LiftoffConfigV2,
   ResourceSpec,
   resolveResourceBindingVars,
   resourceKindToSpec,
+  safeParseLiftoffConfigV2,
   SERVICE_LINK_URL_TOKEN,
 } from '@liftoff/shared';
 import { Injectable } from '@nestjs/common';
@@ -19,6 +21,12 @@ import { PrismaService } from '../prisma/prisma.service';
  * Plain JSON — safe to serialize into the Pulumi program.
  */
 export interface CompiledGraph {
+  /**
+   * LiftoffConfigV2 built FROM the env's Service rows — the authoritative
+   * source of truth for what to deploy (services, ports, build, command, kind).
+   * Replaces the stale stored configYaml at deploy time.
+   */
+  config: LiftoffConfigV2;
   resources: ResourceSpec[];
   bindings: BindingSpec[];
   /** Ids of the resources included — flipped to ACTIVE after a successful apply. */
@@ -41,7 +49,7 @@ export class GraphCompilerService {
     const [services, resources, connections] = await Promise.all([
       this.prismaService.service.findMany({
         where: { environmentId, deletedAt: null },
-        select: { id: true, name: true, port: true },
+        orderBy: { createdAt: 'asc' },
       }),
       this.prismaService.resource.findMany({
         where: { environmentId, deletedAt: null },
@@ -50,6 +58,7 @@ export class GraphCompilerService {
       this.prismaService.connection.findMany({ where: { environmentId } }),
     ]);
 
+    const config = this.compileConfig(services);
     const serviceById = new Map<string, ServiceLite>(services.map((service) => [service.id, service]));
     const resourceById = new Map<string, Resource>(resources.map((resource) => [resource.id, resource]));
 
@@ -100,10 +109,55 @@ export class GraphCompilerService {
     this.assertNoServiceLinkCycle(services, connections);
 
     return {
+      config,
       resources: resourceSpecs,
       bindings,
       resourceIds: resources.map((resource) => resource.id),
     };
+  }
+
+  /**
+   * Builds the deployable LiftoffConfigV2 from the env's Service rows — the
+   * authoritative source of truth (replaces the stale stored configYaml). Maps
+   * each row's kind/runtime/build/routes/command/job fields into the v2 schema
+   * and validates the result so a bad row surfaces a clear error before deploy.
+   */
+  private compileConfig(services: Service[]): LiftoffConfigV2 {
+    const raw = {
+      version: '2.0',
+      services: services.map((service) => ({
+        name: service.name,
+        type: service.kind.toLowerCase(),
+        runtime: {
+          instance_size: service.instanceSize,
+          replicas: service.replicas,
+          port: service.port,
+        },
+        build: {
+          strategy: service.buildStrategy.toLowerCase(),
+          dockerfile_path: service.dockerfilePath,
+          context: service.sourceDir,
+        },
+        routes: service.routePath ? [{ path: service.routePath }] : [],
+        ...(service.healthcheckPath ? { healthcheck: { path: service.healthcheckPath } } : {}),
+        ...(service.command ? { command: service.command } : {}),
+        ...(service.jobSchedule ? { schedule: service.jobSchedule } : {}),
+        ...(service.jobKind ? { jobKind: service.jobKind } : {}),
+        env: {},
+        secrets: [],
+      })),
+    };
+
+    const parsed = safeParseLiftoffConfigV2(raw);
+    if (!parsed.success) {
+      throw Exceptions.badRequest(
+        `Could not compile environment config from services: ${parsed.errors
+          .map((issue) => `${issue.path.join('.')}: ${issue.message}`)
+          .join('; ')}`,
+        ErrorCodes.CONFIG_VALIDATION_FAILED,
+      );
+    }
+    return parsed.data;
   }
 
   private toResourceSpec(resource: Resource): ResourceSpec {

@@ -36,6 +36,8 @@ export interface CreateServiceInput {
   replicas?: number;
   routePath?: string;
   healthcheckPath?: string;
+  /** Start command — set when the image has no detectable start (e.g. Node, no `start` script). */
+  command?: string | null;
 }
 
 export interface UpdateServiceInput {
@@ -48,6 +50,7 @@ export interface UpdateServiceInput {
   replicas?: number;
   routePath?: string | null;
   healthcheckPath?: string | null;
+  command?: string | null;
 }
 
 const servicesBaseKey = ['services'] as const;

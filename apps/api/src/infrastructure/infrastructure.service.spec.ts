@@ -84,7 +84,27 @@ describe('InfrastructureService', () => {
   };
 
   const graphCompilerServiceMock = {
-    compile: jest.fn().mockResolvedValue({ resources: [], bindings: [], resourceIds: [] }),
+    compile: jest.fn().mockResolvedValue({
+      config: {
+        version: '2.0',
+        services: [
+          {
+            name: 'my-app',
+            type: 'service',
+            runtime: { instance_size: 'apps-s-1vcpu-0.5gb', replicas: 1, port: 3000 },
+            build: { strategy: 'auto', dockerfile_path: 'Dockerfile', context: '.' },
+            routes: [{ path: '/' }],
+            env: {},
+            secrets: [],
+          },
+        ],
+        database: { enabled: false },
+        storage: { enabled: false },
+      },
+      resources: [],
+      bindings: [],
+      resourceIds: [],
+    }),
   };
 
   beforeEach(() => {

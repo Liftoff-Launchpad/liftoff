@@ -30,6 +30,7 @@ export interface CanvasNode {
     sourceDir?: string;
     routePath?: string | null;
     healthcheckPath?: string | null;
+    command?: string | null;
     endpoint?: string;
     imageUri?: string;
     buildStrategy?: string;
@@ -196,6 +197,7 @@ export class CanvasService {
             sourceDir: service.sourceDir,
             routePath: service.routePath,
             healthcheckPath: service.healthcheckPath,
+            command: service.command,
             endpoint: latestDeployment?.endpoint ?? undefined,
             imageUri: latestDeployment?.imageUri ?? undefined,
             buildStrategy: latestDeployment?.buildStrategy ?? service.buildStrategy.toLowerCase(),

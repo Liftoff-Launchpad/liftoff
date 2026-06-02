@@ -528,6 +528,9 @@ export function ProjectCanvas({ projectId }: ProjectCanvasProps) {
                       environmentId={String(selectedNode.data?.environmentId ?? '')}
                       projectId={projectId}
                       instanceSize={String(selectedNode.data?.instanceSize ?? '')}
+                      command={
+                        selectedNode.data?.command != null ? String(selectedNode.data.command) : null
+                      }
                       domains={[]}
                       onServiceDeleted={() => setSelectedNode(null)}
                     />

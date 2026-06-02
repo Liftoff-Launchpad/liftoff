@@ -22,6 +22,12 @@ export interface ServiceBuildSpec {
    * existing image-by-repository matching in DeploymentProcessor.
    */
   imageRepository: string;
+  /**
+   * Optional start command (Service.command). Passed to `nixpacks build
+   * --start-cmd` so repos with no detectable start (e.g. a Node app with no
+   * `start` script) build successfully. Ignored for Dockerfile builds.
+   */
+  command?: string;
 }
 
 /**
@@ -127,6 +133,7 @@ ${matrixEntries}
           CONFIGURED_BUILD_STRATEGY: \${{ matrix.service.buildStrategy }}
           CONFIGURED_DOCKERFILE_PATH: \${{ matrix.service.dockerfilePath }}
           CONFIGURED_DOCKER_CONTEXT: \${{ matrix.service.context }}
+          CONFIGURED_START_COMMAND: \${{ matrix.service.command }}
 ${buildVarEnvLines}
         # Capture every command's stdout+stderr to /tmp/build.log via tee. Notify
         # Liftoff (always-runs) reads the tail of this file so failed builds
@@ -159,7 +166,11 @@ ${buildArgFlagsScript}
             echo "::endgroup::"
             echo "::group::nixpacks build"
             BUILD_PLAN="$(nixpacks plan "$CONFIGURED_DOCKER_CONTEXT" --format json | tr -d '\\n')"
-            nixpacks build "$CONFIGURED_DOCKER_CONTEXT" $NIXPACKS_ENV_ARGS --name "$IMAGE_URI"
+            if [ -n "$CONFIGURED_START_COMMAND" ]; then
+              nixpacks build "$CONFIGURED_DOCKER_CONTEXT" $NIXPACKS_ENV_ARGS --start-cmd "$CONFIGURED_START_COMMAND" --name "$IMAGE_URI"
+            else
+              nixpacks build "$CONFIGURED_DOCKER_CONTEXT" $NIXPACKS_ENV_ARGS --name "$IMAGE_URI"
+            fi
             echo "::endgroup::"
           elif [ -f "$CONFIGURED_DOCKER_CONTEXT/Dockerfile" ]; then
             BUILD_STRATEGY="dockerfile"
@@ -178,7 +189,11 @@ ${buildArgFlagsScript}
             echo "::endgroup::"
             echo "::group::nixpacks build"
             BUILD_PLAN="$(nixpacks plan "$CONFIGURED_DOCKER_CONTEXT" --format json | tr -d '\\n')"
-            nixpacks build "$CONFIGURED_DOCKER_CONTEXT" $NIXPACKS_ENV_ARGS --name "$IMAGE_URI"
+            if [ -n "$CONFIGURED_START_COMMAND" ]; then
+              nixpacks build "$CONFIGURED_DOCKER_CONTEXT" $NIXPACKS_ENV_ARGS --start-cmd "$CONFIGURED_START_COMMAND" --name "$IMAGE_URI"
+            else
+              nixpacks build "$CONFIGURED_DOCKER_CONTEXT" $NIXPACKS_ENV_ARGS --name "$IMAGE_URI"
+            fi
             echo "::endgroup::"
           fi
 
@@ -275,11 +290,13 @@ ${nixpacksLines}`;
     const dockerfilePath = JSON.stringify(service.dockerfilePath);
     const buildStrategy = JSON.stringify(service.buildStrategy);
     const imageRepository = JSON.stringify(service.imageRepository);
+    const command = JSON.stringify(service.command ?? '');
     return `          - name: ${name}
             context: ${context}
             dockerfilePath: ${dockerfilePath}
             buildStrategy: ${buildStrategy}
-            imageRepository: ${imageRepository}`;
+            imageRepository: ${imageRepository}
+            command: ${command}`;
   }
 
   private trimTrailingSlash(url: string): string {

@@ -314,6 +314,7 @@ function toServiceSpec(
     variables: Array.from(merged.values()),
     bindings,
     healthCheckPath: service.healthcheck?.path,
+    command: service.command,
   };
 }
 

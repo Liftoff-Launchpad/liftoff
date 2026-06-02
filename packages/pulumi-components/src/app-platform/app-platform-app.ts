@@ -61,6 +61,12 @@ export interface AppPlatformServiceSpec {
   bindings?: AppPlatformBindingEnv[];
   /** Optional HTTP healthcheck path; if omitted, App Platform falls back to TCP probe. */
   healthCheckPath?: string;
+  /**
+   * Start command override. Set as App Platform `run_command` so it works for
+   * both Dockerfile and Nixpacks images. Essential for services whose image has
+   * no default start (e.g. a Node repo with no `start` script).
+   */
+  command?: string;
 }
 
 /**
@@ -114,8 +120,16 @@ export class AppPlatformApp extends pulumi.ComponentResource {
     const tags = createLiftoffTags(args.projectName, args.environmentName);
     const appName = truncateKebabCase(toKebabCase(args.appName), 32);
 
-    const serviceEntries = args.services.map((service) =>
+    // Partition components by kind: HTTP services (and, for now, jobs/static
+    // sites which degrade to services) go in services[]; background workers go
+    // in workers[] (no port/routes/healthcheck).
+    const workerSpecs = args.services.filter((service) => service.kind === 'worker');
+    const serviceSpecs = args.services.filter((service) => service.kind !== 'worker');
+    const serviceEntries = serviceSpecs.map((service) =>
       this.toServiceSpec(service, args.projectName, args.environmentName),
+    );
+    const workerEntries = workerSpecs.map((service) =>
+      this.toWorkerSpec(service, args.projectName, args.environmentName),
     );
 
     const app = new digitalocean.App(
@@ -124,7 +138,8 @@ export class AppPlatformApp extends pulumi.ComponentResource {
         spec: {
           name: appName,
           region: args.region,
-          services: serviceEntries,
+          ...(serviceEntries.length > 0 ? { services: serviceEntries } : {}),
+          ...(workerEntries.length > 0 ? { workers: workerEntries } : {}),
           ...(args.databases && args.databases.length > 0
             ? {
                 databases: args.databases.map((database) => ({
@@ -182,10 +197,46 @@ export class AppPlatformApp extends pulumi.ComponentResource {
       httpPort: service.httpPort,
       instanceCount: service.instanceCount,
       instanceSizeSlug: service.instanceSizeSlug,
+      ...(service.command ? { runCommand: service.command } : {}),
       ...(service.healthCheckPath
         ? { healthCheck: { httpPath: service.healthCheckPath } }
         : {}),
       ...(service.routes.length > 0 ? { routes: service.routes } : {}),
+      envs: this.buildServiceEnvs(
+        service.variables,
+        service.bindings ?? [],
+        projectName,
+        environmentName,
+      ),
+    };
+  }
+
+  /**
+   * Maps a worker-kind spec to an App Platform `workers[]` entry — a long-running
+   * non-HTTP process. No port / routes / healthcheck; a runCommand is typical.
+   */
+  private toWorkerSpec(
+    service: AppPlatformServiceSpec,
+    projectName: string,
+    environmentName: string,
+  ): digitalocean.types.input.AppSpecWorker {
+    const parsedImage = this.parseDocrImageUri(service.imageUri);
+    const componentName = truncateKebabCase(
+      toKebabCase(`${service.name}-${environmentName}`),
+      32,
+    );
+
+    return {
+      name: componentName,
+      image: {
+        registry: parsedImage.registry,
+        registryType: 'DOCR',
+        repository: parsedImage.repository,
+        tag: parsedImage.tag,
+      },
+      instanceCount: service.instanceCount,
+      instanceSizeSlug: service.instanceSizeSlug,
+      ...(service.command ? { runCommand: service.command } : {}),
       envs: this.buildServiceEnvs(
         service.variables,
         service.bindings ?? [],

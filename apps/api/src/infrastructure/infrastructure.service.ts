@@ -89,7 +89,10 @@ export class InfrastructureService {
       Role.ADMIN,
     ]);
 
-    const config = this.resolveEnvironmentConfig(environment);
+    // Config + graph compiled from Service/Resource/Connection rows (source of
+    // truth), not the stale stored configYaml.
+    const compiledGraph = await this.graphCompilerService.compile(environment.id);
+    const config = compiledGraph.config;
     const doToken = this.decryptDoToken(environment.doAccount.doToken);
     const imageUri = await this.resolveImageUri(environment, doToken);
     const stackName = this.buildStackName(environment.project.id, environment.name);
@@ -103,7 +106,6 @@ export class InfrastructureService {
     // Phase 1 preview path: same single-image assumption as provision.
     const serviceImages: Record<string, string> = { [firstService.name]: imageUri };
     const serviceVariables = await this.resolveServiceVariablesForEnv(environment.id);
-    const compiledGraph = await this.graphCompilerService.compile(environment.id);
 
     const stackArgs: AppPlatformStackArgs = {
       projectName: environment.project.name,

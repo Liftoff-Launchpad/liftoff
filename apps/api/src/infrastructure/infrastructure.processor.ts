@@ -133,7 +133,12 @@ export class InfrastructureProcessor extends WorkerHost {
     const stackName = this.buildStackName(deployment.environment.project.id, deployment.environment.name);
     const stateSpacesKey = this.buildStateSpacesKey(stackName);
     const doToken = this.decryptDoToken(deployment.environment.doAccount.doToken);
-    const config = this.parseLiftoffConfig(job.data.configYaml);
+
+    // Compile the deployable config + graph straight from the env's Service /
+    // Resource / Connection rows — the authoritative source of truth. The stored
+    // configYaml is only a seed and can be stale (Phase D), so we no longer parse it.
+    const compiledGraph = await this.graphCompilerService.compile(deployment.environment.id);
+    const config = compiledGraph.config;
 
     await this.prismaService.deployment.update({
       where: { id: deployment.id },
@@ -149,10 +154,6 @@ export class InfrastructureProcessor extends WorkerHost {
       ? await this.resolveServiceImagesFromBundle(job.data.bundleId)
       : this.resolveServiceImagesSingle(config, job.data.imageUri);
     const serviceVariables = await this.resolveServiceVariablesForEnv(deployment.environment.id);
-
-    // Compile the interactive graph: which managed resources to provision and
-    // which connection env vars to auto-inject into services (Phase B).
-    const compiledGraph = await this.graphCompilerService.compile(deployment.environment.id);
 
     const stackArgs: AppPlatformStackArgs = {
       projectName: deployment.environment.project.name,

@@ -23,6 +23,7 @@ export interface CanvasNode {
     lastDeployTime?: string;
     buildStrategy?: string;
     runtimeSummary?: string;
+    command?: string | null;
     // Resource-node fields (database/redis/storage nodes backed by Resource rows).
     resourceId?: string;
     resourceKind?: 'POSTGRES' | 'REDIS' | 'SPACES_BUCKET';

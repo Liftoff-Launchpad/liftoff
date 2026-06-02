@@ -969,6 +969,7 @@ export class RepositoriesService implements OnModuleInit {
       imageRepository: useNamespacedRepos
         ? `${projectName}/${environmentName}/${service.name}`
         : `${projectName}/${environmentName}`,
+      command: service.command ?? undefined,
     }));
   }
 
