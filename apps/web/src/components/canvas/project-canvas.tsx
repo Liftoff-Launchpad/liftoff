@@ -19,11 +19,16 @@ import {
 import '@xyflow/react/dist/style.css';
 import { useQueryClient } from '@tanstack/react-query';
 
+import { X } from 'lucide-react';
+import { LiveAppLogs } from '@/components/logs/live-app-logs';
+import { Button } from '@/components/ui/button';
+import { AddServiceDialog } from './add-service-dialog';
 import { CanvasEmptyState } from './canvas-empty-state';
 import { ServiceNode } from './service-node';
 import { DatabaseNode } from './database-node';
 import { CanvasToolbar } from './canvas-toolbar';
 import { ConfigDrawer } from './config-drawer/config-drawer';
+import { DrawerLogsTab } from './config-drawer/drawer-logs-tab';
 import { DrawerVariablesTab } from './config-drawer/drawer-variables-tab';
 import { DrawerMetricsTab } from './config-drawer/drawer-metrics-tab';
 import { DrawerSettingsTab } from './config-drawer/drawer-settings-tab';
@@ -82,6 +87,8 @@ export function ProjectCanvas({ projectId }: ProjectCanvasProps) {
   const [contextMenuPos, setContextMenuPos] = useState<{ x: number; y: number } | null>(null);
   const [viewMode, setViewMode] = useState<'canvas' | 'dev'>('canvas');
   const [activityOpen, setActivityOpen] = useState(false);
+  const [addServiceOpen, setAddServiceOpen] = useState(false);
+  const [logsPanelOpen, setLogsPanelOpen] = useState(false);
 
   const addChange = useStagedChangesStore((s) => s.addChange);
 
@@ -288,6 +295,8 @@ export function ProjectCanvas({ projectId }: ProjectCanvasProps) {
         onAddClick={() => setCommandPaletteOpen(true)}
         activityOpen={activityOpen}
         onActivityToggle={() => setActivityOpen((open) => !open)}
+        logsOpen={logsPanelOpen}
+        onLogsToggle={() => setLogsPanelOpen((open) => !open)}
       />
 
       {!hasNodes ? (
@@ -343,6 +352,32 @@ export function ProjectCanvas({ projectId }: ProjectCanvasProps) {
         </aside>
       )}
 
+      {logsPanelOpen && activeEnvironmentId && (
+        <aside className="liftoff-panel absolute bottom-4 right-4 top-20 z-20 flex w-[min(720px,calc(100vw-112px))] flex-col overflow-hidden rounded-lg p-5">
+          <div className="mb-4 flex items-center justify-between">
+            <div>
+              <h2 className="text-xl font-semibold">Environment logs</h2>
+              <p className="mt-1 text-xs text-muted-foreground">
+                All services in this environment, interleaved. Click a service node and open its
+                Logs tab to filter to that component.
+              </p>
+            </div>
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => setLogsPanelOpen(false)}
+              className="text-muted-foreground hover:text-foreground"
+              title="Close"
+            >
+              <X className="h-4 w-4" />
+            </Button>
+          </div>
+          <div className="min-h-0 flex-1 overflow-auto">
+            <LiveAppLogs environmentId={activeEnvironmentId} />
+          </div>
+        </aside>
+      )}
+
       {viewMode === 'canvas' && (
         <>
           {hasNodes && (
@@ -361,22 +396,21 @@ export function ProjectCanvas({ projectId }: ProjectCanvasProps) {
                   <>
                     <DrawerMetricsTab environmentId={String(selectedNode.data?.environmentId ?? '')} />
                     <DrawerVariablesTab
-                      nodeId={selectedNode.id}
-                      canvasNodes={canvasData?.nodes ?? []}
-                      onChange={(vars) => {
-                        addChange({
-                          nodeId: selectedNode.id,
-                          type: 'CHANGE_VARIABLE',
-                          label: `Update ${vars.length} variables`,
-                          payload: { variables: vars },
-                        });
-                      }}
+                      serviceId={selectedNode.id}
+                      environmentId={String(selectedNode.data?.environmentId ?? '')}
+                    />
+                    <DrawerLogsTab
+                      environmentId={String(selectedNode.data?.environmentId ?? '')}
+                      serviceName={String(selectedNode.data?.serviceName ?? '') || undefined}
                     />
                     <DrawerSettingsTab
                       nodeId={selectedNode.id}
+                      nodeName={String(selectedNode.data?.serviceName ?? selectedNode.data?.label ?? '')}
                       environmentId={String(selectedNode.data?.environmentId ?? '')}
+                      projectId={projectId}
                       instanceSize={String(selectedNode.data?.instanceSize ?? '')}
                       domains={[]}
+                      onServiceDeleted={() => setSelectedNode(null)}
                     />
                   </>
                 )}
@@ -389,11 +423,24 @@ export function ProjectCanvas({ projectId }: ProjectCanvasProps) {
           <CommandPalette
             open={commandPaletteOpen}
             onOpenChange={setCommandPaletteOpen}
+            onAddNewService={() => {
+              setCommandPaletteOpen(false);
+              setAddServiceOpen(true);
+            }}
             onAddService={handleAddService}
             onRedeployAll={handleDeploy}
             onDevMode={() => setViewMode('dev')}
           />
         </>
+      )}
+
+      {activeEnvironmentId && (
+        <AddServiceDialog
+          open={addServiceOpen}
+          onOpenChange={setAddServiceOpen}
+          environmentId={activeEnvironmentId}
+          projectId={projectId}
+        />
       )}
     </div>
   );

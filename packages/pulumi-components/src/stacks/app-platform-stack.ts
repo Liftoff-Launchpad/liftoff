@@ -1,7 +1,11 @@
-import type { LiftoffConfig } from '@liftoff/shared';
+import type { LiftoffConfigV2, LiftoffServiceV2 } from '@liftoff/shared';
 import * as digitalocean from '@pulumi/digitalocean';
 import * as pulumi from '@pulumi/pulumi';
-import { AppPlatformApp } from '../app-platform/app-platform-app';
+import {
+  AppPlatformApp,
+  type AppPlatformServiceSpec,
+  type AppPlatformVariable,
+} from '../app-platform/app-platform-app';
 import { ManagedPostgres } from '../database/managed-postgres';
 import { DocrRepository } from '../registry/docr-repository';
 import { SpacesBucket } from '../storage/spaces-bucket';
@@ -14,8 +18,23 @@ export interface AppPlatformStackArgs {
   environmentId: string;
   doRegion: string;
   doToken: string;
-  imageUri: string;
-  config: LiftoffConfig;
+  /**
+   * LiftoffConfig v2 — multi-service. Callers MUST promote v1 configs before
+   * passing in (use `promoteV1ToV2` from `@liftoff/shared`).
+   */
+  config: LiftoffConfigV2;
+  /**
+   * Maps each `config.services[].name` → fully-qualified DOCR image URI.
+   * Every service in `config.services` must have an entry here.
+   */
+  serviceImages: Record<string, string>;
+  /**
+   * Phase 2: maps each `config.services[].name` → resolved runtime variables
+   * (vault env-scoped + service-scoped, with service overriding env on shared keys).
+   * Pass an empty array for any service with no variables; omit a service key
+   * entirely and only the auto-injected LIFTOFF_* metadata vars will appear.
+   */
+  serviceVariables?: Record<string, AppPlatformVariable[]>;
 }
 
 export interface StackOutputs {
@@ -29,13 +48,30 @@ export interface StackOutputs {
 }
 
 /**
- * Creates the Liftoff app-platform stack resources in a user's DigitalOcean account.
+ * Provisions Liftoff's app-platform stack in a user's DigitalOcean account:
+ *
+ *   - 1× DOCR (registry creds + repo URL) — env-wide, shared across services
+ *   - Optional 1× Managed Postgres if `config.database.enabled`
+ *   - Optional 1× Spaces Bucket if `config.storage.enabled`
+ *   - 1× App Platform App with one `services[]` entry per `config.services` row
+ *     (path-based routing across services)
+ *
+ * The single `digitalocean.Provider` is scoped to the user's token so every
+ * resource lands in their account.
  */
 export function createAppPlatformStack(args: AppPlatformStackArgs): StackOutputs {
+  validateServiceImages(args.config.services, args.serviceImages);
+
   const provider = new digitalocean.Provider('user-account', {
     token: args.doToken,
   });
-  const registryName = resolveRegistryNameFromImageUri(args.imageUri);
+  const firstService = args.config.services[0];
+  if (!firstService) {
+    throw new Error('AppPlatformStack requires at least one service in config.services');
+  }
+  const registryName = resolveRegistryNameFromImageUri(
+    args.serviceImages[firstService.name] ?? '',
+  );
 
   const registry = new DocrRepository(
     'registry',
@@ -83,6 +119,15 @@ export function createAppPlatformStack(args: AppPlatformStackArgs): StackOutputs
     );
   }
 
+  const serviceVariables = args.serviceVariables ?? {};
+  const serviceSpecs: AppPlatformServiceSpec[] = args.config.services.map((service) =>
+    toServiceSpec(
+      service,
+      args.serviceImages[service.name] ?? '',
+      serviceVariables[service.name] ?? [],
+    ),
+  );
+
   const app = new AppPlatformApp(
     'app',
     {
@@ -90,13 +135,7 @@ export function createAppPlatformStack(args: AppPlatformStackArgs): StackOutputs
       projectName: args.projectName,
       environmentName: args.environmentName,
       region: args.doRegion,
-      imageUri: args.imageUri,
-      httpPort: args.config.runtime.port,
-      instanceSizeSlug: args.config.runtime.instance_size,
-      instanceCount: args.config.runtime.replicas,
-      envVars: args.config.env ?? {},
-      secretNames: args.config.secrets ?? [],
-      healthCheckPath: args.config.healthcheck?.path ?? '/health',
+      services: serviceSpecs,
       database: database
         ? {
             clusterName: database.clusterName,
@@ -128,6 +167,63 @@ export function createAppPlatformStack(args: AppPlatformStackArgs): StackOutputs
   };
 
   return outputs;
+}
+
+function toServiceSpec(
+  service: LiftoffServiceV2,
+  imageUri: string,
+  vaultVariables: AppPlatformVariable[],
+): AppPlatformServiceSpec {
+  const routes =
+    service.routes && service.routes.length > 0
+      ? service.routes.map((route) => ({ path: route.path }))
+      : [{ path: '/' }];
+
+  // Merge liftoff.yml legacy `env`/`secrets` (low priority) with vault values
+  // (high priority — they're the explicit user-supplied source of truth in Phase 2+).
+  // Vault entries override yaml entries on the same key.
+  const merged = new Map<string, AppPlatformVariable>();
+  for (const [key, value] of Object.entries(service.env ?? {})) {
+    merged.set(key, { key, value, kind: 'plain' });
+  }
+  for (const secretName of service.secrets ?? []) {
+    // Legacy yaml `secrets: [NAME]` only specifies the key — the actual value
+    // was meant to be set in App Platform's UI. Phase 2+ stops emitting these
+    // when the user has a vault entry; the fallback keeps existing yaml configs working.
+    if (!merged.has(secretName)) {
+      merged.set(secretName, { key: secretName, value: secretName, kind: 'secret' });
+    }
+  }
+  for (const variable of vaultVariables) {
+    merged.set(variable.key, variable);
+  }
+
+  return {
+    name: service.name,
+    kind: service.type,
+    imageUri,
+    httpPort: service.runtime.port,
+    instanceSizeSlug: service.runtime.instance_size,
+    instanceCount: service.runtime.replicas,
+    routes,
+    variables: Array.from(merged.values()),
+    healthCheckPath: service.healthcheck?.path,
+  };
+}
+
+function validateServiceImages(
+  services: LiftoffConfigV2['services'],
+  serviceImages: Record<string, string>,
+): void {
+  const missing = services
+    .map((service) => service.name)
+    .filter((name) => !serviceImages[name]);
+  if (missing.length > 0) {
+    throw new Error(
+      `serviceImages is missing entries for: ${missing.join(', ')}. ` +
+        'Every service in config.services must have a corresponding image URI.',
+    );
+  }
 }
 
 function resolveRegistryNameFromImageUri(imageUri: string): string {

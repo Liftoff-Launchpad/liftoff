@@ -204,6 +204,70 @@ export function useUpdateConfig(projectId: string) {
   });
 }
 
+export interface TriggerBuildResult {
+  workflowFile: string;
+  ref: string;
+  repository: string;
+  /** DeploymentBundle.id created by the backend before dispatching the workflow. */
+  bundleId: string;
+}
+
+/**
+ * Kicks a fresh GitHub Actions run for the env via `workflow_dispatch`. Works
+ * even when no service has ever deployed successfully — use this for the first
+ * deploy after failures, or to retry from the latest commit without pushing a
+ * "kick deploy" commit.
+ *
+ * Re-syncs the workflow file first (server-side) so the dispatch trigger is
+ * guaranteed present, even for envs whose workflow was committed before this
+ * feature existed.
+ */
+export function useTriggerBuild(projectId: string, environmentId: string) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (): Promise<TriggerBuildResult> => {
+      const response = await apiClient.post<TriggerBuildResult>(
+        `/projects/${projectId}/environments/${environmentId}/build`,
+      );
+      return response.data;
+    },
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['deployments'] }),
+        queryClient.invalidateQueries({ queryKey: ['canvas'] }),
+      ]);
+    },
+  });
+}
+
+/**
+ * Redeploys the environment — reuses each service's most recent SUCCESS image,
+ * Pulumi up reconciles the App Platform spec to current Service rows. No rebuild.
+ *
+ * Use this to recover after deleting a service that broke a bundle, or to
+ * re-apply config changes (variables, scaling, routing) without a fresh push.
+ */
+export function useRedeployEnvironment(projectId: string, environmentId: string) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async () => {
+      const response = await apiClient.post<{ bundleId: string; deploymentCount: number }>(
+        `/projects/${projectId}/environments/${environmentId}/redeploy`,
+      );
+      return response.data;
+    },
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['deployments'] }),
+        queryClient.invalidateQueries({ queryKey: ['canvas'] }),
+        queryClient.invalidateQueries({ queryKey: [...environmentBaseKey, projectId] }),
+      ]);
+    },
+  });
+}
+
 /**
  * Validates environment config without persisting changes.
  */

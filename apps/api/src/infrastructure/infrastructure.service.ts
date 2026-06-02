@@ -6,7 +6,8 @@ import {
 } from '@prisma/client';
 import {
   ErrorCodes,
-  safeParseLiftoffConfig,
+  type LiftoffConfigV2,
+  safeParseLiftoffConfigAny,
 } from '@liftoff/shared';
 import { Queue } from 'bullmq';
 import * as yaml from 'js-yaml';
@@ -21,9 +22,11 @@ import {
   QUEUE_NAMES,
 } from '../queues/queue.constants';
 import { ProjectsService } from '../projects/projects.service';
+import { VariablesService } from '../variables/variables.service';
 import { PulumiRunnerService } from './pulumi-runner.service';
 import {
   AppPlatformStackArgs,
+  AppPlatformVariable,
   PulumiPreviewResult,
 } from './types/pulumi.types';
 
@@ -69,6 +72,7 @@ export class InfrastructureService {
     private readonly encryptionService: EncryptionService,
     private readonly doApiService: DoApiService,
     private readonly pulumiRunnerService: PulumiRunnerService,
+    private readonly variablesService: VariablesService,
     @InjectQueue(QUEUE_NAMES.INFRASTRUCTURE)
     private readonly infrastructureQueue: Queue<InfraDestroyJobPayload>,
   ) {}
@@ -87,6 +91,16 @@ export class InfrastructureService {
     const doToken = this.decryptDoToken(environment.doAccount.doToken);
     const imageUri = await this.resolveImageUri(environment, doToken);
     const stackName = this.buildStackName(environment.project.id, environment.name);
+    const firstService = config.services[0];
+    if (!firstService) {
+      throw Exceptions.badRequest(
+        'LiftoffConfig must contain at least one service',
+        ErrorCodes.CONFIG_VALIDATION_FAILED,
+      );
+    }
+    // Phase 1 preview path: same single-image assumption as provision.
+    const serviceImages: Record<string, string> = { [firstService.name]: imageUri };
+    const serviceVariables = await this.resolveServiceVariablesForEnv(environment.id);
 
     const stackArgs: AppPlatformStackArgs = {
       projectName: environment.project.name,
@@ -95,8 +109,9 @@ export class InfrastructureService {
       environmentId: environment.id,
       doRegion: environment.doAccount.region,
       doToken,
-      imageUri,
       config,
+      serviceImages,
+      serviceVariables,
     };
 
     return this.pulumiRunnerService.preview({
@@ -181,9 +196,9 @@ export class InfrastructureService {
     return environment;
   }
 
-  private resolveEnvironmentConfig(environment: EnvironmentPreviewContext): AppPlatformStackArgs['config'] {
+  private resolveEnvironmentConfig(environment: EnvironmentPreviewContext): LiftoffConfigV2 {
     if (environment.configParsed !== null) {
-      const parsedResult = safeParseLiftoffConfig(environment.configParsed);
+      const parsedResult = safeParseLiftoffConfigAny(environment.configParsed);
       if (parsedResult.success) {
         return parsedResult.data;
       }
@@ -203,7 +218,7 @@ export class InfrastructureService {
       throw Exceptions.badRequest('Invalid liftoff.yml YAML syntax', ErrorCodes.CONFIG_INVALID_YAML);
     }
 
-    const parsedConfig = safeParseLiftoffConfig(yamlPayload);
+    const parsedConfig = safeParseLiftoffConfigAny(yamlPayload);
     if (!parsedConfig.success) {
       throw Exceptions.badRequest('liftoff.yml validation failed', ErrorCodes.CONFIG_VALIDATION_FAILED);
     }
@@ -225,6 +240,26 @@ export class InfrastructureService {
       environment.doAccountId,
     );
     return `registry.digitalocean.com/${registryName}/${environment.project.name}/${environment.name}:preview`;
+  }
+
+  private async resolveServiceVariablesForEnv(
+    environmentId: string,
+  ): Promise<Record<string, AppPlatformVariable[]>> {
+    const services = await this.prismaService.service.findMany({
+      where: { environmentId, deletedAt: null },
+      select: { id: true, name: true },
+    });
+
+    const result: Record<string, AppPlatformVariable[]> = {};
+    for (const service of services) {
+      const entries = await this.variablesService.resolveRuntimeVariablesForService(service.id);
+      result[service.name] = entries.map((entry) => ({
+        key: entry.key,
+        value: entry.value ?? '',
+        kind: entry.kind === 'SECRET' ? 'secret' : 'plain',
+      }));
+    }
+    return result;
   }
 
   private decryptDoToken(encryptedToken: string): string {

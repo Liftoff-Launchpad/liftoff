@@ -1,5 +1,11 @@
-import { DeploymentStatus, type Deployment, type Environment, type ServiceType } from '@prisma/client';
-import { ErrorCodes, safeParseLiftoffConfig } from '@liftoff/shared';
+import {
+  DeploymentStatus,
+  type Deployment,
+  type Environment,
+  type Service,
+  type ServiceType,
+} from '@prisma/client';
+import { ErrorCodes } from '@liftoff/shared';
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { ProjectsService } from '../projects/projects.service';
@@ -18,17 +24,24 @@ export interface CanvasNode {
   data: {
     label: string;
     environmentId: string;
+    // Set on `service`-type nodes (Phase 1+). DB/redis/storage child nodes leave this empty.
+    serviceId?: string;
+    serviceKind?: 'SERVICE' | 'WORKER' | 'JOB' | 'STATIC_SITE';
     serviceName?: string;
+    sourceDir?: string;
+    routePath?: string | null;
+    healthcheckPath?: string | null;
     endpoint?: string;
     imageUri?: string;
     buildStrategy?: string;
     runtimeSummary?: string;
     region?: string;
     instanceSize?: string;
+    replicas?: number;
+    port?: number;
     status?: DeploymentStatus;
     databaseEngine?: 'postgres' | 'redis';
     hostname?: string;
-    port?: number;
     bucketName?: string;
     outputs?: Record<string, string>;
     lastDeployTime?: string;
@@ -55,28 +68,43 @@ export interface AutoSetupResult {
   deploymentId: string;
 }
 
-interface EnvironmentWithDeployments {
+type EnvironmentWithServices = {
   id: string;
   name: string;
   gitBranch: string;
   doAccountId: string;
-  canvasPosition: { x: number; y: number } | null;
-  deployments: Deployment[];
-  configParsed: unknown;
+  doAccount: { region: string };
+  services: Array<
+    Service & {
+      deployments: Array<Pick<
+        Deployment,
+        'id' | 'status' | 'imageUri' | 'buildStrategy' | 'endpoint' | 'updatedAt' | 'createdAt'
+      >>;
+    }
+  >;
   pulumiStack: {
     outputs: Record<string, string> | null;
   } | null;
-  doAccount: {
-    region: string;
-  };
-}
+};
 
-const DEFAULT_POSITIONS = {
-  service: { x: 400, y: 200 },
-  database: { x: 680, y: 380 },
-  redis: { x: 680, y: 520 },
-  storage: { x: 680, y: 660 },
+// Layout grid: services arranged horizontally; child resources (DB/Redis/Spaces)
+// hang off the first service of each env.
+const SERVICE_BASE = { x: 400, y: 200 };
+const SERVICE_X_STEP = 320;
+const CHILD_RESOURCE_OFFSETS = {
+  database: { dx: 280, dy: 180 },
+  redis: { dx: 280, dy: 320 },
+  storage: { dx: 280, dy: 460 },
 } as const;
+
+function isCanvasPosition(value: unknown): value is { x: number; y: number } {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    typeof (value as { x?: unknown }).x === 'number' &&
+    typeof (value as { y?: unknown }).y === 'number'
+  );
+}
 
 /**
  * Handles canvas state retrieval and auto-setup for Railway-inspired canvas UI.
@@ -93,6 +121,9 @@ export class CanvasService {
 
   /**
    * Returns the enriched canvas state (nodes + edges + live status) for a project.
+   *
+   * Each Service row becomes one `service`-type node; per-env Pulumi outputs
+   * (Managed Postgres, Spaces bucket, etc.) hang off the FIRST service of their env.
    */
   public async getCanvas(projectId: string, userId: string): Promise<CanvasState> {
     await this.projectsService.assertProjectRole(projectId, userId);
@@ -102,9 +133,7 @@ export class CanvasService {
       select: {
         id: true,
         name: true,
-        repository: {
-          select: { id: true },
-        },
+        repository: { select: { id: true } },
         environments: {
           where: { deletedAt: null },
           orderBy: { createdAt: 'asc' },
@@ -113,16 +142,27 @@ export class CanvasService {
             name: true,
             gitBranch: true,
             doAccountId: true,
-            canvasPosition: true,
-            configParsed: true,
             doAccount: { select: { region: true } },
-            deployments: {
-              orderBy: { createdAt: 'desc' },
-              take: 1,
+            services: {
+              where: { deletedAt: null },
+              orderBy: { createdAt: 'asc' },
+              include: {
+                deployments: {
+                  orderBy: { createdAt: 'desc' },
+                  take: 1,
+                  select: {
+                    id: true,
+                    status: true,
+                    imageUri: true,
+                    buildStrategy: true,
+                    endpoint: true,
+                    updatedAt: true,
+                    createdAt: true,
+                  },
+                },
+              },
             },
-            pulumiStack: {
-              select: { outputs: true },
-            },
+            pulumiStack: { select: { outputs: true } },
           },
         },
       },
@@ -136,42 +176,66 @@ export class CanvasService {
     const edges: CanvasEdge[] = [];
 
     for (const env of project.environments) {
-      const envWithData = env as unknown as EnvironmentWithDeployments;
-      const latestDeployment = envWithData.deployments[0];
-      const canvasPos = envWithData.canvasPosition;
-      const position: { x: number; y: number } = canvasPos !== null
-        ? { x: canvasPos.x, y: canvasPos.y }
-        : { x: DEFAULT_POSITIONS.service.x, y: DEFAULT_POSITIONS.service.y };
+      const envWithData = env as unknown as EnvironmentWithServices;
+      // Compute first-service anchor up-front (used to position env-scoped child resources
+      // like the Pulumi-provisioned Postgres/Spaces). Computing inside the loop and via a
+      // closure trips TypeScript's narrowing across function boundaries.
+      const firstService = envWithData.services[0] ?? null;
+      const firstServiceId: string | null = firstService?.id ?? null;
+      const firstServicePosition: { x: number; y: number } | null = firstService
+        ? isCanvasPosition(firstService.canvasPosition)
+          ? firstService.canvasPosition
+          : { x: SERVICE_BASE.x, y: SERVICE_BASE.y }
+        : null;
 
-      nodes.push({
-        id: env.id,
-        type: 'service',
-        position,
-        data: {
-          label: env.name,
-          environmentId: env.id,
-          serviceName: env.name,
-          endpoint: latestDeployment?.endpoint ?? undefined,
-          imageUri: latestDeployment?.imageUri ?? undefined,
-          buildStrategy: latestDeployment?.buildStrategy ?? undefined,
-          runtimeSummary: this.resolveRuntimeSummary(envWithData.configParsed),
-          region: envWithData.doAccount.region,
-          status: latestDeployment?.status,
-          lastDeployTime: latestDeployment?.updatedAt?.toISOString(),
-        },
+      envWithData.services.forEach((service, index) => {
+        const latestDeployment = service.deployments[0];
+        const position = isCanvasPosition(service.canvasPosition)
+          ? service.canvasPosition
+          : { x: SERVICE_BASE.x + index * SERVICE_X_STEP, y: SERVICE_BASE.y };
+
+        nodes.push({
+          id: service.id,
+          type: 'service',
+          position,
+          data: {
+            label: service.name,
+            environmentId: env.id,
+            serviceId: service.id,
+            serviceKind: service.kind,
+            serviceName: service.name,
+            sourceDir: service.sourceDir,
+            routePath: service.routePath,
+            healthcheckPath: service.healthcheckPath,
+            endpoint: latestDeployment?.endpoint ?? undefined,
+            imageUri: latestDeployment?.imageUri ?? undefined,
+            buildStrategy: latestDeployment?.buildStrategy ?? service.buildStrategy.toLowerCase(),
+            runtimeSummary: `${service.instanceSize} • port ${service.port}`,
+            region: envWithData.doAccount.region,
+            instanceSize: service.instanceSize,
+            replicas: service.replicas,
+            port: service.port,
+            status: latestDeployment?.status,
+            lastDeployTime: latestDeployment?.updatedAt?.toISOString(),
+          },
+        });
       });
 
-      if (envWithData.pulumiStack?.outputs) {
-        const outputs = envWithData.pulumiStack.outputs as Record<string, string>;
+      // Pulumi-provisioned env resources (postgres, redis, spaces) hang off the first service.
+      const pulumiOutputs = envWithData.pulumiStack?.outputs ?? null;
+      if (pulumiOutputs && firstServiceId !== null && firstServicePosition !== null) {
+        const anchor = firstServicePosition;
+        const outputs = pulumiOutputs as Record<string, string>;
 
         if (outputs.dbUri || outputs.databaseHost) {
-          const dbOffset: { x: number; y: number } = canvasPos !== null
-            ? { x: canvasPos.x + 280, y: canvasPos.y + 180 }
-            : { x: DEFAULT_POSITIONS.database.x, y: DEFAULT_POSITIONS.database.y };
+          const dbNodeId = `db-${env.id}`;
           nodes.push({
-            id: `db-${env.id}`,
+            id: dbNodeId,
             type: 'database',
-            position: dbOffset,
+            position: {
+              x: anchor.x + CHILD_RESOURCE_OFFSETS.database.dx,
+              y: anchor.y + CHILD_RESOURCE_OFFSETS.database.dy,
+            },
             data: {
               label: 'PostgreSQL',
               environmentId: env.id,
@@ -181,47 +245,39 @@ export class CanvasService {
               outputs,
             },
           });
-
-          edges.push({
-            id: `edge-${env.id}-db`,
-            source: env.id,
-            target: `db-${env.id}`,
-          });
+          edges.push({ id: `edge-${env.id}-db`, source: firstServiceId, target: dbNodeId });
         }
 
         if (outputs.redisUri || outputs.redisHost) {
-          const redisOffset: { x: number; y: number } = canvasPos !== null
-            ? { x: canvasPos.x + 280, y: canvasPos.y + 320 }
-            : { x: DEFAULT_POSITIONS.redis.x, y: DEFAULT_POSITIONS.redis.y };
+          const redisNodeId = `redis-${env.id}`;
           nodes.push({
-            id: `redis-${env.id}`,
+            id: redisNodeId,
             type: 'redis',
-            position: redisOffset,
+            position: {
+              x: anchor.x + CHILD_RESOURCE_OFFSETS.redis.dx,
+              y: anchor.y + CHILD_RESOURCE_OFFSETS.redis.dy,
+            },
             data: {
               label: 'Redis',
               environmentId: env.id,
               databaseEngine: 'redis',
-              hostname: outputs.redisHost ?? outputs.redisHost,
+              hostname: outputs.redisHost,
               port: outputs.redisPort ? parseInt(String(outputs.redisPort), 10) : 6379,
               outputs,
             },
           });
-
-          edges.push({
-            id: `edge-${env.id}-redis`,
-            source: env.id,
-            target: `redis-${env.id}`,
-          });
+          edges.push({ id: `edge-${env.id}-redis`, source: firstServiceId, target: redisNodeId });
         }
 
         if (outputs.bucketName || outputs.spacesBucket) {
-          const storageOffset: { x: number; y: number } = canvasPos !== null
-            ? { x: canvasPos.x + 280, y: canvasPos.y + 460 }
-            : { x: DEFAULT_POSITIONS.storage.x, y: DEFAULT_POSITIONS.storage.y };
+          const storageNodeId = `storage-${env.id}`;
           nodes.push({
-            id: `storage-${env.id}`,
+            id: storageNodeId,
             type: 'storage',
-            position: storageOffset,
+            position: {
+              x: anchor.x + CHILD_RESOURCE_OFFSETS.storage.dx,
+              y: anchor.y + CHILD_RESOURCE_OFFSETS.storage.dy,
+            },
             data: {
               label: 'Spaces Bucket',
               environmentId: env.id,
@@ -229,12 +285,7 @@ export class CanvasService {
               outputs,
             },
           });
-
-          edges.push({
-            id: `edge-${env.id}-storage`,
-            source: env.id,
-            target: `storage-${env.id}`,
-          });
+          edges.push({ id: `edge-${env.id}-storage`, source: firstServiceId, target: storageNodeId });
         }
       }
     }
@@ -293,18 +344,32 @@ export class CanvasService {
   }
 
   /**
-   * Saves canvas node positions only.
+   * Persists canvas node positions for the project's Service rows.
+   *
+   * Child resource nodes (DB/Redis/Spaces with `db-`/`redis-`/`storage-` prefixes)
+   * are derived from Pulumi outputs; their positions are computed from the first
+   * service's position and not stored independently.
    */
   public async saveLayout(projectId: string, userId: string, dto: SaveLayoutDto): Promise<void> {
     await this.projectsService.assertProjectRole(projectId, userId);
 
     for (const nodePos of dto.nodes) {
-      if (nodePos.id.startsWith('db-') || nodePos.id.startsWith('redis-') || nodePos.id.startsWith('storage-')) {
+      if (
+        nodePos.id.startsWith('db-') ||
+        nodePos.id.startsWith('redis-') ||
+        nodePos.id.startsWith('storage-')
+      ) {
         continue;
       }
 
-      await this.prismaService.environment.updateMany({
-        where: { id: nodePos.id, projectId },
+      // Service rows are env-scoped, env is project-scoped — restrict the update
+      // to services belonging to a non-deleted env on this project so cross-project
+      // writes are impossible even if a node id is spoofed client-side.
+      await this.prismaService.service.updateMany({
+        where: {
+          id: nodePos.id,
+          environment: { projectId, deletedAt: null },
+        },
         data: {
           canvasPosition: { x: nodePos.x, y: nodePos.y },
         },
@@ -397,18 +462,5 @@ export class CanvasService {
     }
 
     return defaultValidatedDoAccount.id;
-  }
-
-  private resolveRuntimeSummary(configParsed: unknown): string | undefined {
-    if (!configParsed) {
-      return undefined;
-    }
-
-    const parsedConfig = safeParseLiftoffConfig(configParsed);
-    if (!parsedConfig.success) {
-      return undefined;
-    }
-
-    return `${parsedConfig.data.runtime.instance_size} • port ${parsedConfig.data.runtime.port}`;
   }
 }

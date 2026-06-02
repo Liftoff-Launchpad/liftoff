@@ -34,10 +34,25 @@ describe('EnvironmentsController', () => {
     validateConfig: jest.fn(),
   };
 
+  const variablesServiceMock = {
+    applyVariables: jest.fn().mockResolvedValue({ bundleId: 'bundle-1', deploymentCount: 1 }),
+  };
+
+  const repositoriesServiceMock = {
+    triggerBuildForEnvironment: jest.fn().mockResolvedValue({
+      workflowFile: 'liftoff-deploy.yml',
+      ref: 'main',
+      repository: 'org/repo',
+      bundleId: 'bundle-1',
+    }),
+  };
+
   beforeEach(() => {
     jest.clearAllMocks();
     controller = new EnvironmentsController(
       environmentsServiceMock as unknown as EnvironmentsService,
+      variablesServiceMock as never,
+      repositoriesServiceMock as never,
     );
   });
 

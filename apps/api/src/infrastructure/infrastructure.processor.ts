@@ -8,7 +8,8 @@ import {
 import {
   DeploymentStatusType,
   ErrorCodes,
-  safeParseLiftoffConfig,
+  type LiftoffConfigV2,
+  safeParseLiftoffConfigAny,
 } from '@liftoff/shared';
 import { Injectable, Logger } from '@nestjs/common';
 import type { Job } from 'bullmq';
@@ -25,9 +26,11 @@ import {
   QUEUE_TIMEOUTS,
   QUEUE_NAMES,
 } from '../queues/queue.constants';
+import { VariablesService } from '../variables/variables.service';
 import { PulumiRunnerService } from './pulumi-runner.service';
 import {
   AppPlatformStackArgs,
+  AppPlatformVariable,
   PulumiLogLevel,
   PulumiResourceProgress,
   PulumiStackOutputs,
@@ -98,6 +101,7 @@ export class InfrastructureProcessor extends WorkerHost {
     private readonly doApiService: DoApiService,
     private readonly pulumiRunnerService: PulumiRunnerService,
     private readonly eventsGateway: EventsGateway,
+    private readonly variablesService: VariablesService,
   ) {
     super();
   }
@@ -139,6 +143,11 @@ export class InfrastructureProcessor extends WorkerHost {
     });
     this.broadcastDeploymentStatus(deployment.id, DeploymentStatus.PROVISIONING);
 
+    const serviceImages = job.data.bundleId
+      ? await this.resolveServiceImagesFromBundle(job.data.bundleId)
+      : this.resolveServiceImagesSingle(config, job.data.imageUri);
+    const serviceVariables = await this.resolveServiceVariablesForEnv(deployment.environment.id);
+
     const stackArgs: AppPlatformStackArgs = {
       projectName: deployment.environment.project.name,
       projectId: deployment.environment.project.id,
@@ -146,8 +155,9 @@ export class InfrastructureProcessor extends WorkerHost {
       environmentId: deployment.environment.id,
       doRegion: deployment.environment.doAccount.region,
       doToken,
-      imageUri: job.data.imageUri,
       config,
+      serviceImages,
+      serviceVariables,
     };
 
     const runResult = await this.runProvisionWithTimeout(deployment.id, {
@@ -164,24 +174,46 @@ export class InfrastructureProcessor extends WorkerHost {
       },
     });
 
+    // Collect all deployments covered by this bundle (single-row fallback if no bundle).
+    const bundleDeploymentIds = job.data.bundleId
+      ? (
+          await this.prismaService.deployment.findMany({
+            where: { bundleId: job.data.bundleId },
+            select: { id: true },
+          })
+        ).map((d) => d.id)
+      : [deployment.id];
+
     if (!runResult.success) {
       const errorMessage = this.sanitizeErrorMessage(
         runResult.error ?? 'Pulumi provisioning failed',
       );
 
-      await this.prismaService.deployment.update({
-        where: { id: deployment.id },
+      await this.prismaService.deployment.updateMany({
+        where: { id: { in: bundleDeploymentIds } },
         data: {
           status: DeploymentStatus.FAILED,
           errorMessage,
           completedAt: new Date(),
         },
       });
-      this.broadcastDeploymentStatus(deployment.id, DeploymentStatus.FAILED);
-      this.eventsGateway.broadcastDeploymentComplete({
-        deploymentId: deployment.id,
-        status: DeploymentStatus.FAILED as DeploymentStatusType,
-      });
+      if (job.data.bundleId) {
+        await this.prismaService.deploymentBundle.update({
+          where: { id: job.data.bundleId },
+          data: {
+            status: 'FAILED',
+            errorMessage,
+            completedAt: new Date(),
+          },
+        });
+      }
+      for (const deploymentId of bundleDeploymentIds) {
+        this.broadcastDeploymentStatus(deploymentId, DeploymentStatus.FAILED);
+        this.eventsGateway.broadcastDeploymentComplete({
+          deploymentId,
+          status: DeploymentStatus.FAILED as DeploymentStatusType,
+        });
+      }
 
       throw Exceptions.internalError(errorMessage, ErrorCodes.PULUMI_EXECUTION_FAILED);
     }
@@ -226,8 +258,11 @@ export class InfrastructureProcessor extends WorkerHost {
         });
       }
 
-      await transaction.deployment.update({
-        where: { id: deployment.id },
+      // Mark every bundle deployment as DEPLOYING then SUCCESS (Pulumi's
+      // app create already includes its own initial deployment, so SUCCESS
+      // immediately follows once outputs are in).
+      await transaction.deployment.updateMany({
+        where: { id: { in: bundleDeploymentIds } },
         data: {
           status: DeploymentStatus.DEPLOYING,
           endpoint: outputs.appUrl,
@@ -236,12 +271,12 @@ export class InfrastructureProcessor extends WorkerHost {
       });
     });
 
-    this.broadcastDeploymentStatus(deployment.id, DeploymentStatus.DEPLOYING);
+    for (const deploymentId of bundleDeploymentIds) {
+      this.broadcastDeploymentStatus(deploymentId, DeploymentStatus.DEPLOYING);
+    }
 
-    await this.prismaService.deployment.update({
-      where: {
-        id: deployment.id,
-      },
+    await this.prismaService.deployment.updateMany({
+      where: { id: { in: bundleDeploymentIds } },
       data: {
         status: DeploymentStatus.SUCCESS,
         endpoint: outputs.appUrl,
@@ -250,12 +285,79 @@ export class InfrastructureProcessor extends WorkerHost {
       },
     });
 
-    this.broadcastDeploymentStatus(deployment.id, DeploymentStatus.SUCCESS);
-    this.eventsGateway.broadcastDeploymentComplete({
-      deploymentId: deployment.id,
-      status: DeploymentStatus.SUCCESS as DeploymentStatusType,
-      endpoint: outputs.appUrl,
+    if (job.data.bundleId) {
+      await this.prismaService.deploymentBundle.update({
+        where: { id: job.data.bundleId },
+        data: {
+          status: 'SUCCESS',
+          completedAt: new Date(),
+        },
+      });
+    }
+
+    for (const deploymentId of bundleDeploymentIds) {
+      this.broadcastDeploymentStatus(deploymentId, DeploymentStatus.SUCCESS);
+      this.eventsGateway.broadcastDeploymentComplete({
+        deploymentId,
+        status: DeploymentStatus.SUCCESS as DeploymentStatusType,
+        endpoint: outputs.appUrl,
+      });
+    }
+  }
+
+  /**
+   * Resolves runtime variables (vault env-scoped + service-scoped) for every
+   * Service in the env. Returns a map keyed by service name — matches what
+   * `AppPlatformStackArgs.serviceVariables` expects.
+   */
+  private async resolveServiceVariablesForEnv(
+    environmentId: string,
+  ): Promise<Record<string, AppPlatformVariable[]>> {
+    const services = await this.prismaService.service.findMany({
+      where: { environmentId, deletedAt: null },
+      select: { id: true, name: true },
     });
+
+    const result: Record<string, AppPlatformVariable[]> = {};
+    for (const service of services) {
+      const entries = await this.variablesService.resolveRuntimeVariablesForService(service.id);
+      result[service.name] = entries.map((entry) => ({
+        key: entry.key,
+        value: entry.value ?? '',
+        kind: entry.kind === 'SECRET' ? 'secret' : 'plain',
+      }));
+    }
+    return result;
+  }
+
+  /**
+   * Reads a DeploymentBundle's per-Service Deployments and builds the
+   * `serviceName → imageUri` map the Pulumi component expects.
+   */
+  private async resolveServiceImagesFromBundle(
+    bundleId: string,
+  ): Promise<Record<string, string>> {
+    const deployments = await this.prismaService.deployment.findMany({
+      where: { bundleId },
+      include: { service: { select: { name: true } } },
+    });
+
+    const serviceImages: Record<string, string> = {};
+    for (const deployment of deployments) {
+      if (!deployment.service || !deployment.imageUri) {
+        continue;
+      }
+      serviceImages[deployment.service.name] = deployment.imageUri;
+    }
+
+    if (Object.keys(serviceImages).length === 0) {
+      throw Exceptions.internalError(
+        `DeploymentBundle ${bundleId} has no usable per-service images`,
+        ErrorCodes.DEPLOYMENT_IMAGE_NOT_FOUND,
+      );
+    }
+
+    return serviceImages;
   }
 
   /**
@@ -269,6 +371,8 @@ export class InfrastructureProcessor extends WorkerHost {
       this.buildStackName(environment.project.id, environment.name);
     const config = this.resolveDestroyConfig(environment);
     const imageUri = await this.resolveImageUri(environment, doToken);
+    const serviceImages = this.resolveServiceImagesSingle(config, imageUri);
+    const serviceVariables = await this.resolveServiceVariablesForEnv(environment.id);
 
     const stackArgs: AppPlatformStackArgs = {
       projectName: environment.project.name,
@@ -277,8 +381,9 @@ export class InfrastructureProcessor extends WorkerHost {
       environmentId: environment.id,
       doRegion: environment.doAccount.region,
       doToken,
-      imageUri,
       config,
+      serviceImages,
+      serviceVariables,
     };
 
     await this.pulumiRunnerService.destroy({
@@ -395,9 +500,9 @@ export class InfrastructureProcessor extends WorkerHost {
     return environment;
   }
 
-  private resolveDestroyConfig(environment: EnvironmentWithProvisioningData): AppPlatformStackArgs['config'] {
+  private resolveDestroyConfig(environment: EnvironmentWithProvisioningData): LiftoffConfigV2 {
     if (environment.configParsed !== null) {
-      const parsedResult = safeParseLiftoffConfig(environment.configParsed);
+      const parsedResult = safeParseLiftoffConfigAny(environment.configParsed);
       if (parsedResult.success) {
         return parsedResult.data;
       }
@@ -407,25 +512,29 @@ export class InfrastructureProcessor extends WorkerHost {
       return this.parseLiftoffConfig(environment.configYaml);
     }
 
+    // Fall back to a minimal v2 stub so we can still target the env's App when no
+    // config is recoverable (e.g. orphan rows from older releases).
     return {
-      version: '1.0',
-      service: {
-        name: environment.project.name,
-        type: 'app',
-        region: this.normalizeDoRegion(environment.doAccount.region),
-      },
-      runtime: {
-        instance_size: 'apps-s-1vcpu-0.5gb',
-        replicas: 1,
-        port: 3000,
-      },
-      env: {},
-      secrets: [],
-      build: {
-        strategy: 'auto',
-        dockerfile_path: 'Dockerfile',
-        context: '.',
-      },
+      version: '2.0',
+      services: [
+        {
+          name: environment.project.name,
+          type: 'service',
+          runtime: {
+            instance_size: 'apps-s-1vcpu-0.5gb',
+            replicas: 1,
+            port: 3000,
+          },
+          build: {
+            strategy: 'auto',
+            dockerfile_path: 'Dockerfile',
+            context: '.',
+          },
+          routes: [{ path: '/' }],
+          env: {},
+          secrets: [],
+        },
+      ],
       database: {
         enabled: false,
         engine: 'postgres',
@@ -435,12 +544,26 @@ export class InfrastructureProcessor extends WorkerHost {
       storage: {
         enabled: false,
       },
-      healthcheck: {
-        path: '/health',
-        interval: 30,
-        timeout: 5,
-      },
     };
+  }
+
+  /**
+   * Phase 1 helper: build a single-entry serviceImages map keyed by the v2
+   * config's first service. Multi-service builds in Phase 1.8 will populate
+   * all entries from per-matrix-build deploy-complete callbacks.
+   */
+  private resolveServiceImagesSingle(
+    config: LiftoffConfigV2,
+    imageUri: string,
+  ): Record<string, string> {
+    const firstService = config.services[0];
+    if (!firstService) {
+      throw Exceptions.internalError(
+        'LiftoffConfig v2 must contain at least one service',
+        ErrorCodes.CONFIG_VALIDATION_FAILED,
+      );
+    }
+    return { [firstService.name]: imageUri };
   }
 
   private async resolveImageUri(
@@ -470,7 +593,7 @@ export class InfrastructureProcessor extends WorkerHost {
     }
   }
 
-  private parseLiftoffConfig(configYaml: string): AppPlatformStackArgs['config'] {
+  private parseLiftoffConfig(configYaml: string): LiftoffConfigV2 {
     let parsedYaml: unknown;
     try {
       parsedYaml = yaml.load(configYaml);
@@ -478,7 +601,7 @@ export class InfrastructureProcessor extends WorkerHost {
       throw Exceptions.badRequest('Invalid liftoff.yml YAML syntax', ErrorCodes.CONFIG_INVALID_YAML);
     }
 
-    const parsedConfig = safeParseLiftoffConfig(parsedYaml);
+    const parsedConfig = safeParseLiftoffConfigAny(parsedYaml);
     if (!parsedConfig.success) {
       throw Exceptions.badRequest('liftoff.yml validation failed', ErrorCodes.CONFIG_VALIDATION_FAILED);
     }

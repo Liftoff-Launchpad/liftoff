@@ -16,6 +16,7 @@ import { CurrentUser } from '../common/decorators';
 import { Exceptions } from '../common/exceptions/app.exception';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { ConnectRepositoryDto } from './dto/connect-repository.dto';
+import { ScanEnvExampleDto, ScanEnvExampleResult } from './dto/scan-env-example.dto';
 import { GitHubRepo } from './github.service';
 import { ConnectedRepository, RepositoriesService } from './repositories.service';
 
@@ -66,6 +67,20 @@ export class RepositoriesController {
     @Body() dto: ConnectRepositoryDto,
   ): Promise<ConnectedRepository> {
     return this.repositoriesService.connect(projectId, user.id, dto);
+  }
+
+  /**
+   * Scans the connected repo's branch for `.env.example` (or `.env.sample` /
+   * `.env.template`) under an optional source dir. Used by the onboarding flow
+   * to pre-populate the "fill in your env vars" step before the first deploy.
+   */
+  @Post('scan-env-example')
+  public scanEnvExample(
+    @Param('projectId') projectId: string,
+    @CurrentUser() user: User,
+    @Body() dto: ScanEnvExampleDto,
+  ): Promise<ScanEnvExampleResult> {
+    return this.repositoriesService.scanEnvExample(projectId, user.id, dto);
   }
 
   /**

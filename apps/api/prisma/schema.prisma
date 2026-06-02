@@ -19,6 +19,19 @@ enum ServiceType {
   KUBERNETES
 }
 
+enum ServiceKind {
+  SERVICE
+  WORKER
+  JOB
+  STATIC_SITE
+}
+
+enum BuildStrategy {
+  AUTO
+  DOCKERFILE
+  NIXPACKS
+}
+
 enum DeploymentStatus {
   PENDING
   QUEUED
@@ -31,6 +44,26 @@ enum DeploymentStatus {
   ROLLING_BACK
   ROLLED_BACK
   CANCELLED
+}
+
+enum DeploymentBundleStatus {
+  PENDING
+  IN_PROGRESS
+  SUCCESS
+  FAILED
+  PARTIAL
+  CANCELLED
+}
+
+enum VariableScope {
+  BUILD // GitHub Actions secret → --build-arg at docker/nixpacks build time
+  RUNTIME // App Platform env → process.env.* in the running container
+  BOTH
+}
+
+enum VariableKind {
+  PLAIN // value readable via API (UI shows it)
+  SECRET // write-only after creation (UI shows ••••, "Change value" replaces)
 }
 
 enum LogLevel {
@@ -120,71 +153,197 @@ model TeamMember {
 }
 
 model Repository {
-  id            String   @id @default(cuid())
-  projectId     String   @unique @map("project_id")
-  githubId      Int      @map("github_id")
-  fullName      String   @map("full_name")
-  cloneUrl      String   @map("clone_url")
-  branch        String   @default("main")
-  webhookId     Int?     @map("webhook_id")
-  webhookSecret String?  @map("webhook_secret")
-  createdAt     DateTime @default(now()) @map("created_at")
-  updatedAt     DateTime @updatedAt @map("updated_at")
-  project       Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  id            String    @id @default(cuid())
+  projectId     String    @unique @map("project_id")
+  githubId      Int       @map("github_id")
+  fullName      String    @map("full_name")
+  cloneUrl      String    @map("clone_url")
+  branch        String    @default("main")
+  webhookId     Int?      @map("webhook_id")
+  webhookSecret String?   @map("webhook_secret")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+  project       Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  services      Service[]
 
   @@map("repositories")
 }
 
 model Environment {
-  id           String                     @id @default(cuid())
-  projectId    String                     @map("project_id")
-  doAccountId  String                     @map("do_account_id")
-  name         String
-  gitBranch    String                     @map("git_branch")
-  liftoffDeploySecret String?             @map("liftoff_deploy_secret")
-  serviceType  ServiceType                @default(APP) @map("service_type")
-  configYaml   String?                    @map("config_yaml")
-  configParsed Json?                      @map("config_parsed")
-  canvasPosition Json?                   @map("canvas_position")
-  createdAt    DateTime                   @default(now()) @map("created_at")
-  updatedAt    DateTime                   @updatedAt @map("updated_at")
-  deletedAt    DateTime?                  @map("deleted_at")
-  project      Project                    @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  doAccount    DOAccount                  @relation(fields: [doAccountId], references: [id])
-  deployments  Deployment[]
-  pulumiStack  PulumiStack?
-  resources    InfrastructureResource[]
-  alerts       Alert[]
-  pipelineGraph PipelineGraph?
+  id                  String                   @id @default(cuid())
+  projectId           String                   @map("project_id")
+  doAccountId         String                   @map("do_account_id")
+  name                String
+  gitBranch           String                   @map("git_branch")
+  liftoffDeploySecret String?                  @map("liftoff_deploy_secret")
+  serviceType         ServiceType              @default(APP) @map("service_type")
+  // `configYaml` / `configParsed` retained as the env-level default seed and for
+  // pulumi destroy fallback when no Service rows exist. The authoritative source of
+  // "what gets deployed" is the Service[] relation as of LiftoffConfig v2.
+  configYaml          String?                  @map("config_yaml")
+  configParsed        Json?                    @map("config_parsed")
+  // Deprecated: per-service canvas positions now live on Service.canvasPosition.
+  // Kept for one release for client back-compat; remove after Phase 1 ships.
+  canvasPosition      Json?                    @map("canvas_position")
+  createdAt           DateTime                 @default(now()) @map("created_at")
+  updatedAt           DateTime                 @updatedAt @map("updated_at")
+  deletedAt           DateTime?                @map("deleted_at")
+  project             Project                  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  doAccount           DOAccount                @relation(fields: [doAccountId], references: [id])
+  services            Service[]
+  deployments         Deployment[]
+  deploymentBundles   DeploymentBundle[]
+  variables           EnvironmentVariable[]
+  pulumiStack         PulumiStack?
+  resources           InfrastructureResource[]
+  alerts              Alert[]
+  pipelineGraph       PipelineGraph?
 
   @@unique([projectId, name])
   @@index([projectId])
   @@map("environments")
 }
 
+model Service {
+  id              String            @id @default(cuid())
+  environmentId   String            @map("environment_id")
+  // Optional: which Repository builds this service. In Phase 1 every Service in an env
+  // shares the env's single repo (Project.repository), so this column is informational.
+  // Becomes meaningful in Phase 4 (multi-repo per project).
+  repositoryId    String?           @map("repository_id")
+  name            String
+  kind            ServiceKind       @default(SERVICE)
+  // Build configuration -----------------------------------------------------------
+  sourceDir       String            @default(".") @map("source_dir")
+  buildStrategy   BuildStrategy     @default(AUTO) @map("build_strategy")
+  dockerfilePath  String            @default("Dockerfile") @map("dockerfile_path")
+  // Runtime configuration ---------------------------------------------------------
+  port            Int               @default(3000)
+  instanceSize    String            @default("apps-s-1vcpu-0.5gb") @map("instance_size")
+  replicas        Int               @default(1)
+  // SERVICE: HTTP path served by this service (e.g. "/", "/api"). Null = internal-only.
+  // WORKER / JOB: ignored.
+  routePath       String?           @map("route_path")
+  // SERVICE: healthcheck HTTP path. Null = App Platform TCP probe.
+  healthcheckPath String?           @map("healthcheck_path")
+  // WORKER / JOB: process command override.
+  command         String?
+  // JOB only: cron schedule string + kind (cron | pre_deploy | post_deploy | failed_deploy).
+  jobSchedule     String?           @map("job_schedule")
+  jobKind         String?           @map("job_kind")
+  // Canvas state ------------------------------------------------------------------
+  canvasPosition  Json?             @map("canvas_position")
+  // Lifecycle ---------------------------------------------------------------------
+  createdAt       DateTime          @default(now()) @map("created_at")
+  updatedAt       DateTime          @updatedAt @map("updated_at")
+  deletedAt       DateTime?         @map("deleted_at")
+  environment     Environment       @relation(fields: [environmentId], references: [id], onDelete: Cascade)
+  repository      Repository?       @relation(fields: [repositoryId], references: [id], onDelete: SetNull)
+  deployments     Deployment[]
+  variables       ServiceVariable[]
+
+  @@unique([environmentId, name])
+  @@index([environmentId])
+  @@index([repositoryId])
+  @@map("services")
+}
+
+/// Environment-scoped variable. Inherited by every Service in the env; can be
+/// overridden by a ServiceVariable with the same key on a specific Service.
+/// Values are encrypted at rest with AES-256-GCM via EncryptionService.
+model EnvironmentVariable {
+  id             String        @id @default(cuid())
+  environmentId  String        @map("environment_id")
+  key            String // ^[A-Z_][A-Z0-9_]*$ validated at the API layer
+  encryptedValue String        @map("encrypted_value")
+  scope          VariableScope @default(RUNTIME)
+  kind           VariableKind  @default(PLAIN)
+  /// User id (or 'system') that created the variable. Light audit trail.
+  createdBy      String?       @map("created_by")
+  /// Bumped on every value change. UI shows "Last changed N days ago" on SECRET rows.
+  lastRotatedAt  DateTime?     @map("last_rotated_at")
+  createdAt      DateTime      @default(now()) @map("created_at")
+  updatedAt      DateTime      @updatedAt @map("updated_at")
+  environment    Environment   @relation(fields: [environmentId], references: [id], onDelete: Cascade)
+
+  @@unique([environmentId, key])
+  @@index([environmentId])
+  @@map("environment_variables")
+}
+
+/// Service-scoped variable. Overrides any EnvironmentVariable with the same key
+/// for THIS service only. Same encryption + audit shape as EnvironmentVariable.
+model ServiceVariable {
+  id             String        @id @default(cuid())
+  serviceId      String        @map("service_id")
+  key            String
+  encryptedValue String        @map("encrypted_value")
+  scope          VariableScope @default(RUNTIME)
+  kind           VariableKind  @default(PLAIN)
+  createdBy      String?       @map("created_by")
+  lastRotatedAt  DateTime?     @map("last_rotated_at")
+  createdAt      DateTime      @default(now()) @map("created_at")
+  updatedAt      DateTime      @updatedAt @map("updated_at")
+  service        Service       @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+
+  @@unique([serviceId, key])
+  @@index([serviceId])
+  @@map("service_variables")
+}
+
+model DeploymentBundle {
+  id            String                 @id @default(cuid())
+  environmentId String                 @map("environment_id")
+  status        DeploymentBundleStatus @default(PENDING)
+  // Optional: which user triggered this bundle (UI deploy click, webhook push, etc.)
+  triggeredBy   String?                @map("triggered_by")
+  commitSha     String?                @map("commit_sha")
+  errorMessage  String?                @map("error_message")
+  startedAt     DateTime?              @map("started_at")
+  completedAt   DateTime?              @map("completed_at")
+  createdAt     DateTime               @default(now()) @map("created_at")
+  updatedAt     DateTime               @updatedAt @map("updated_at")
+  environment   Environment            @relation(fields: [environmentId], references: [id], onDelete: Cascade)
+  deployments   Deployment[]
+
+  @@index([environmentId, createdAt(sort: Desc)])
+  @@map("deployment_bundles")
+}
+
 model Deployment {
-  id            String           @id @default(cuid())
-  environmentId String           @map("environment_id")
-  status        DeploymentStatus @default(PENDING)
-  commitSha     String?          @map("commit_sha")
-  commitMessage String?          @map("commit_message")
+  id            String            @id @default(cuid())
+  environmentId String            @map("environment_id")
+  // Nullable so pre-Phase-1 rows (no Service backfill yet at the moment of insert)
+  // remain valid. The migration backfills every existing row with the env's default
+  // Service. New rows always set this.
+  serviceId     String?           @map("service_id")
+  // Bundle that groups per-service deployments for the same atomic apply.
+  // Nullable for back-compat with single-service envs and manual triggers.
+  bundleId      String?           @map("bundle_id")
+  status        DeploymentStatus  @default(PENDING)
+  commitSha     String?           @map("commit_sha")
+  commitMessage String?           @map("commit_message")
   branch        String?
-  imageUri      String?          @map("image_uri")
-  buildStrategy String?          @map("build_strategy")
-  buildRunUrl   String?          @map("build_run_url")
-  buildPlan     Json?            @map("build_plan")
-  triggeredBy   String?          @map("triggered_by")
+  imageUri      String?           @map("image_uri")
+  buildStrategy String?           @map("build_strategy")
+  buildRunUrl   String?           @map("build_run_url")
+  buildPlan     Json?             @map("build_plan")
+  triggeredBy   String?           @map("triggered_by")
   endpoint      String?
-  errorMessage  String?          @map("error_message")
-  startedAt     DateTime?        @map("started_at")
-  completedAt   DateTime?        @map("completed_at")
-  createdAt     DateTime         @default(now()) @map("created_at")
-  updatedAt     DateTime         @updatedAt @map("updated_at")
-  environment   Environment      @relation(fields: [environmentId], references: [id], onDelete: Cascade)
+  errorMessage  String?           @map("error_message")
+  startedAt     DateTime?         @map("started_at")
+  completedAt   DateTime?         @map("completed_at")
+  createdAt     DateTime          @default(now()) @map("created_at")
+  updatedAt     DateTime          @updatedAt @map("updated_at")
+  environment   Environment       @relation(fields: [environmentId], references: [id], onDelete: Cascade)
+  service       Service?          @relation(fields: [serviceId], references: [id], onDelete: SetNull)
+  bundle        DeploymentBundle? @relation(fields: [bundleId], references: [id], onDelete: SetNull)
   logs          DeploymentLog[]
 
   @@index([environmentId])
   @@index([environmentId, createdAt(sort: Desc)])
+  @@index([serviceId, createdAt(sort: Desc)])
+  @@index([bundleId])
   @@map("deployments")
 }
 

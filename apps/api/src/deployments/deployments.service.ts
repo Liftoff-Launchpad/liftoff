@@ -254,6 +254,46 @@ export class DeploymentsService {
   }
 
   /**
+   * Returns the most recent deployment for the given service along with its
+   * persisted logs (build + pulumi). Used by the drawer to show users the
+   * actual build error when a service is in FAILED state — without making
+   * them navigate to the GitHub Actions tab.
+   *
+   * Returns `null` when the service has never been deployed.
+   */
+  public async getLatestServiceDeployment(
+    environmentId: string,
+    serviceName: string,
+    userId: string,
+  ): Promise<{ deployment: Deployment; logs: DeploymentLog[] } | null> {
+    const environment = await this.getEnvironmentContext(environmentId);
+    await this.projectsService.assertProjectRole(environment.projectId, userId);
+
+    const service = await this.prismaService.service.findFirst({
+      where: { environmentId: environment.id, name: serviceName, deletedAt: null },
+      select: { id: true },
+    });
+    if (!service) {
+      return null;
+    }
+
+    const deployment = await this.prismaService.deployment.findFirst({
+      where: { environmentId: environment.id, serviceId: service.id },
+      orderBy: { createdAt: 'desc' },
+    });
+    if (!deployment) {
+      return null;
+    }
+
+    const logs = await this.prismaService.deploymentLog.findMany({
+      where: { deploymentId: deployment.id },
+      orderBy: { timestamp: 'asc' },
+    });
+
+    return { deployment, logs };
+  }
+
+  /**
    * Cancels a pending or queued deployment.
    */
   public async cancel(

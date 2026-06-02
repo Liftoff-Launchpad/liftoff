@@ -76,6 +76,10 @@ describe('InfrastructureService', () => {
     add: jest.fn(),
   };
 
+  const variablesServiceMock = {
+    resolveRuntimeVariablesForService: jest.fn().mockResolvedValue([]),
+  };
+
   beforeEach(() => {
     jest.clearAllMocks();
 
@@ -85,6 +89,7 @@ describe('InfrastructureService', () => {
       encryptionServiceMock as unknown as EncryptionService,
       doApiServiceMock as unknown as DoApiService,
       pulumiRunnerServiceMock as unknown as PulumiRunnerService,
+      variablesServiceMock as never,
       infrastructureQueueMock as unknown as Queue,
     );
   });

@@ -538,13 +538,73 @@ export const bucketEndpoint = outputs.bucketEndpoint;
           return;
         }
 
-        const errorSummary =
-          recentOutputLines.length > 0
-            ? recentOutputLines.join('\n')
-            : `Command "${options.command}" exited with code ${code ?? -1}`;
-        reject(new Error(errorSummary));
+        reject(new Error(this.buildExitErrorSummary(recentOutputLines, options, code)));
       });
     });
+  }
+
+  /**
+   * Builds a human-readable error summary from the tail of a failed command's
+   * output. When the command streams Pulumi `--json` events, the raw lines are
+   * JSON blobs (`{"sequence":12,...,"diagnosticEvent":{...}}`) — dumping those
+   * verbatim into `Deployment.errorMessage` is what made failures unreadable.
+   * Here we parse the event tail and surface the actual diagnostic messages,
+   * preferring error/fatal severity. Non-JSON lines (plain stderr) are kept
+   * as-is; we fall back to a generic exit-code message when nothing usable
+   * was captured.
+   */
+  private buildExitErrorSummary(
+    recentLines: string[],
+    options: CommandRunOptions,
+    code: number | null,
+  ): string {
+    const genericFallback = `Command "${options.command}" exited with code ${code ?? -1}`;
+    if (recentLines.length === 0) {
+      return genericFallback;
+    }
+
+    if (!options.parsePulumiJson) {
+      return recentLines.join('\n');
+    }
+
+    const diagnostics: { severity: string; message: string }[] = [];
+    const plainLines: string[] = [];
+    for (const line of recentLines) {
+      const parsed = this.parseJson(line);
+      if (parsed && typeof parsed === 'object') {
+        const event = parsed as PulumiJsonEvent;
+        const message = event.diagnosticEvent?.message?.trim();
+        if (message) {
+          diagnostics.push({
+            severity: (event.diagnosticEvent?.severity ?? 'info').toLowerCase(),
+            message,
+          });
+        }
+        // Non-diagnostic events (resource/summary) carry no user-facing text — skip.
+        continue;
+      }
+      // Not JSON -> plain stderr text worth keeping.
+      const trimmed = line.trim();
+      if (trimmed.length > 0) {
+        plainLines.push(trimmed);
+      }
+    }
+
+    const errors = diagnostics.filter((d) => d.severity === 'error' || d.severity === 'fatal');
+    const chosen = errors.length > 0 ? errors : diagnostics;
+    if (chosen.length > 0) {
+      // Newest-last tail, like a normal log; a few lines give context.
+      return chosen
+        .slice(-3)
+        .map((d) => d.message)
+        .join('\n');
+    }
+
+    if (plainLines.length > 0) {
+      return plainLines.slice(-3).join('\n');
+    }
+
+    return genericFallback;
   }
 
   private handlePulumiEvent(event: PulumiJsonEvent, options: CommandRunOptions): void {

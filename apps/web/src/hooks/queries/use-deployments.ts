@@ -106,6 +106,36 @@ export function useDeploymentLogs(environmentId: string, deploymentId: string) {
   });
 }
 
+export interface LatestServiceDeploymentResponse {
+  deployment: DeploymentRecord;
+  logs: DeploymentLogRecord[];
+}
+
+/**
+ * Fetches the most recent deployment for a service plus its persisted logs
+ * (build + pulumi). Used by the drawer "Last build output" panel — refreshes
+ * frequently so a freshly-failed build surfaces its error within seconds.
+ *
+ * Returns `null` when the service has never been deployed.
+ */
+export function useLatestServiceDeployment(
+  environmentId: string,
+  serviceName: string | undefined,
+  options: { refetchIntervalMs?: number | false } = {},
+) {
+  return useQuery({
+    queryKey: [...deploymentsBaseQueryKey, environmentId, 'latest-by-service', serviceName],
+    enabled: Boolean(environmentId && serviceName),
+    refetchInterval: options.refetchIntervalMs ?? 5000,
+    queryFn: async () => {
+      const response = await apiClient.get<LatestServiceDeploymentResponse | null>(
+        `/environments/${environmentId}/deployments/latest-by-service/${serviceName}`,
+      );
+      return response.data;
+    },
+  });
+}
+
 /**
  * Triggers a deployment for an environment.
  */

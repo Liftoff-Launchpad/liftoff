@@ -93,6 +93,10 @@ export class DeploymentProcessor extends WorkerHost {
 
   /**
    * Runs App Platform deploy for an image-ready deployment.
+   *
+   * Multi-service: when `bundleId` is set, builds the App Platform spec with
+   * patches for EVERY sibling deployment's image at once (one atomic updateApp).
+   * Single-service: existing single-deployment behaviour.
    */
   private async handleDeploy(job: Job<DeployJobPayload>): Promise<void> {
     const deployment = await this.getDeploymentOrThrow(job.data.deploymentId);
@@ -110,34 +114,50 @@ export class DeploymentProcessor extends WorkerHost {
 
     const doToken = this.decryptDoToken(deployment.environment.doAccount.doToken);
 
-    await this.prismaService.deployment.update({
-      where: { id: deployment.id },
+    // Resolve the set of image URIs to apply atomically — all bundle siblings,
+    // or just this deployment for single-service / manual triggers.
+    const bundleImages = job.data.bundleId
+      ? await this.resolveBundleImageUris(job.data.bundleId)
+      : [deployment.imageUri];
+    const affectedDeploymentIds = job.data.bundleId
+      ? (
+          await this.prismaService.deployment.findMany({
+            where: { bundleId: job.data.bundleId },
+            select: { id: true },
+          })
+        ).map((d) => d.id)
+      : [deployment.id];
+
+    await this.prismaService.deployment.updateMany({
+      where: { id: { in: affectedDeploymentIds } },
       data: {
         status: DeploymentStatus.DEPLOYING,
         startedAt: deployment.startedAt ?? new Date(),
         errorMessage: null,
       },
     });
-    this.broadcastDeploymentStatus(deployment.id, DeploymentStatus.DEPLOYING);
+    for (const deploymentId of affectedDeploymentIds) {
+      this.broadcastDeploymentStatus(deploymentId, DeploymentStatus.DEPLOYING);
+    }
 
     let deployCycleResult: AppDeployCycleResult;
     try {
-      deployCycleResult = await this.deployImageToApp(
+      deployCycleResult = await this.deployImagesToApp(
         doToken,
         deployment.environment.doAccountId,
         appContext,
-        deployment.imageUri,
+        bundleImages,
       );
     } catch (error) {
       const errorMessage = this.sanitizeErrorMessage(this.resolveErrorMessage(error));
-      await this.failDeployment(deployment.id, errorMessage);
+      await this.failBundleOrDeployment(affectedDeploymentIds, errorMessage);
       await this.queueAutoRollback(deployment.id, deployment.environmentId);
       throw error;
     }
 
     if (deployCycleResult.outcome === 'ACTIVE') {
-      await this.prismaService.deployment.update({
-        where: { id: deployment.id },
+      await this.prismaService.deployment.updateMany({
+        where: { id: { in: affectedDeploymentIds } },
         data: {
           status: DeploymentStatus.SUCCESS,
           endpoint: appContext.appUrl,
@@ -145,12 +165,20 @@ export class DeploymentProcessor extends WorkerHost {
           completedAt: new Date(),
         },
       });
-      this.broadcastDeploymentStatus(deployment.id, DeploymentStatus.SUCCESS);
-      this.eventsGateway.broadcastDeploymentComplete({
-        deploymentId: deployment.id,
-        status: DeploymentStatus.SUCCESS as DeploymentStatusType,
-        endpoint: appContext.appUrl,
-      });
+      if (job.data.bundleId) {
+        await this.prismaService.deploymentBundle.update({
+          where: { id: job.data.bundleId },
+          data: { status: 'SUCCESS', completedAt: new Date() },
+        });
+      }
+      for (const deploymentId of affectedDeploymentIds) {
+        this.broadcastDeploymentStatus(deploymentId, DeploymentStatus.SUCCESS);
+        this.eventsGateway.broadcastDeploymentComplete({
+          deploymentId,
+          status: DeploymentStatus.SUCCESS as DeploymentStatusType,
+          endpoint: appContext.appUrl,
+        });
+      }
       return;
     }
 
@@ -166,8 +194,48 @@ export class DeploymentProcessor extends WorkerHost {
       deployCycleResult.outcome === 'TIMEOUT'
         ? 'App Platform deployment timed out'
         : 'App Platform deployment failed';
-    await this.failDeployment(deployment.id, errorMessage);
+    await this.failBundleOrDeployment(affectedDeploymentIds, errorMessage);
     await this.queueAutoRollback(deployment.id, deployment.environmentId);
+  }
+
+  /**
+   * Returns the imageUri for every deployment in the bundle, in the order the
+   * App Platform spec patcher should apply them. Skips rows that somehow lost
+   * their image (defensive — finalizeBundleIfReady gates on full coverage).
+   */
+  private async resolveBundleImageUris(bundleId: string): Promise<string[]> {
+    const deployments = await this.prismaService.deployment.findMany({
+      where: { bundleId },
+      select: { imageUri: true },
+    });
+    return deployments
+      .map((d) => d.imageUri)
+      .filter((uri): uri is string => Boolean(uri));
+  }
+
+  /**
+   * Marks a set of deployments FAILED and propagates the bundle status when
+   * the failed set covers a whole bundle.
+   */
+  private async failBundleOrDeployment(
+    deploymentIds: string[],
+    errorMessage: string,
+  ): Promise<void> {
+    await this.prismaService.deployment.updateMany({
+      where: { id: { in: deploymentIds } },
+      data: {
+        status: DeploymentStatus.FAILED,
+        errorMessage,
+        completedAt: new Date(),
+      },
+    });
+    for (const deploymentId of deploymentIds) {
+      this.broadcastDeploymentStatus(deploymentId, DeploymentStatus.FAILED);
+      this.eventsGateway.broadcastDeploymentComplete({
+        deploymentId,
+        status: DeploymentStatus.FAILED as DeploymentStatusType,
+      });
+    }
   }
 
   /**
@@ -201,11 +269,11 @@ export class DeploymentProcessor extends WorkerHost {
 
     let deployCycleResult: AppDeployCycleResult;
     try {
-      deployCycleResult = await this.deployImageToApp(
+      deployCycleResult = await this.deployImagesToApp(
         doToken,
         deployment.environment.doAccountId,
         appContext,
-        targetDeployment.imageUri,
+        [targetDeployment.imageUri],
       );
     } catch (error) {
       const errorMessage = this.sanitizeErrorMessage(this.resolveErrorMessage(error));
@@ -359,14 +427,30 @@ export class DeploymentProcessor extends WorkerHost {
     );
   }
 
-  private async deployImageToApp(
+  /**
+   * Patches one or more image URIs into the live App Platform spec atomically.
+   * Each URI is routed to the App component whose `image.repository` matches
+   * (see `buildUpdatedAppSpec`), so multi-service bundles update every
+   * service's tag in a single updateApp + createDeployment cycle.
+   */
+  private async deployImagesToApp(
     doToken: string,
     doAccountId: string,
     appContext: AppDeploymentContext,
-    imageUri: string,
+    imageUris: string[],
   ): Promise<AppDeployCycleResult> {
+    if (imageUris.length === 0) {
+      throw Exceptions.badRequest(
+        'No image URIs to deploy',
+        ErrorCodes.DEPLOYMENT_IMAGE_NOT_FOUND,
+      );
+    }
+
     const app = await this.doApiService.getApp(doToken, appContext.appId, doAccountId);
-    const nextSpec = this.buildUpdatedAppSpec(app, imageUri);
+    let nextSpec: Record<string, unknown> = app.spec as Record<string, unknown>;
+    for (const imageUri of imageUris) {
+      nextSpec = this.buildUpdatedAppSpec({ ...app, spec: nextSpec }, imageUri);
+    }
 
     await this.doApiService.updateApp(doToken, appContext.appId, nextSpec, doAccountId);
     const doDeploymentId = await this.doApiService.createDeployment(doToken, appContext.appId, doAccountId);
@@ -381,6 +465,17 @@ export class DeploymentProcessor extends WorkerHost {
     return { doDeploymentId, outcome };
   }
 
+  /**
+   * Builds a copy of the App Platform spec with the deployed service's image
+   * bumped to the new tag. **Only the entry whose existing `image.repository`
+   * matches the new image's repository is updated** — every other service (and
+   * any workers/jobs) keeps its current image untouched. This is how multi-service
+   * envs get atomic deploys without us accidentally redeploying the wrong service.
+   *
+   * Back-compat: single-service envs created before P1.7 (matrix builds) have
+   * one entry with repository `<project>/<env>` and incoming image
+   * `<docr>/<project>/<env>:<sha>` — the repositories match, so the patch lands.
+   */
   private buildUpdatedAppSpec(app: DOApp, imageUri: string): Record<string, unknown> {
     if (!this.isRecord(app.spec)) {
       throw Exceptions.internalError('App Platform spec is missing', ErrorCodes.INTERNAL_ERROR);
@@ -389,13 +484,14 @@ export class DeploymentProcessor extends WorkerHost {
     const parsedImageUri = this.parseImageUri(imageUri);
     const nextSpec = JSON.parse(JSON.stringify(app.spec)) as Record<string, unknown>;
     const updatedCount =
-      this.patchImageCollection(nextSpec, 'services', parsedImageUri) +
-      this.patchImageCollection(nextSpec, 'workers', parsedImageUri) +
-      this.patchImageCollection(nextSpec, 'jobs', parsedImageUri);
+      this.patchMatchingImageEntry(nextSpec, 'services', parsedImageUri) +
+      this.patchMatchingImageEntry(nextSpec, 'workers', parsedImageUri) +
+      this.patchMatchingImageEntry(nextSpec, 'jobs', parsedImageUri);
 
     if (updatedCount === 0) {
       throw Exceptions.internalError(
-        'App Platform spec does not contain image components',
+        `App Platform spec has no component matching image repository "${parsedImageUri.repository}". ` +
+          'The Pulumi stack may be out of date — a re-provision is required to add the new service.',
         ErrorCodes.INTERNAL_ERROR,
       );
     }
@@ -403,7 +499,7 @@ export class DeploymentProcessor extends WorkerHost {
     return nextSpec;
   }
 
-  private patchImageCollection(
+  private patchMatchingImageEntry(
     appSpec: Record<string, unknown>,
     key: 'services' | 'workers' | 'jobs',
     parsedImageUri: ParsedImageUri,
@@ -416,6 +512,13 @@ export class DeploymentProcessor extends WorkerHost {
     let updates = 0;
     for (const item of collection) {
       if (!this.isRecord(item) || !this.isRecord(item.image)) {
+        continue;
+      }
+
+      const currentRepository = typeof item.image.repository === 'string'
+        ? item.image.repository
+        : '';
+      if (currentRepository !== parsedImageUri.repository) {
         continue;
       }
 

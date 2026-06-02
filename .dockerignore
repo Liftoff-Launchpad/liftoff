@@ -1,12 +1,12 @@
-# Dependencies
-node_modules
-.pnpm-store
-*.pnpm-store
+# Dependencies (recursive — pnpm workspaces leave symlinked node_modules under apps/* and packages/*)
+**/node_modules
+**/.pnpm-store
+**/*.pnpm-store
 
 # Build outputs
-dist
-.next
-*.tsbuildinfo
+**/dist
+**/.next
+**/*.tsbuildinfo
 
 # Environment files
 .env

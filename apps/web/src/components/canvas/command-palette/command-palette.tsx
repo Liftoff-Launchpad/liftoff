@@ -1,6 +1,6 @@
 'use client';
 
-import { Database, Plus, Rocket, Search, Terminal, Workflow } from 'lucide-react';
+import { Box, Database, Plus, Rocket, Search, Terminal, Workflow } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent } from '@/components/ui/dialog';
@@ -19,12 +19,22 @@ interface CommandItem {
 interface CommandPaletteProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  /** Opens the "Add Service" dialog for the env (Phase 1 multi-service). */
+  onAddNewService: () => void;
   onAddService: (type: 'postgres' | 'redis' | 'storage' | 'worker' | 'cron') => void;
   onRedeployAll: () => void;
   onDevMode: () => void;
 }
 
 const INITIAL_ITEMS: CommandItem[] = [
+  {
+    id: 'add-service',
+    label: 'Add Service',
+    description: 'New App Platform component built from your repo',
+    category: 'COMPUTE',
+    icon: <Box className="h-4 w-4" />,
+    action: () => {},
+  },
   {
     id: 'add-postgres',
     label: 'Add PostgreSQL',
@@ -76,7 +86,7 @@ const INITIAL_ITEMS: CommandItem[] = [
   },
 ];
 
-export function CommandPalette({ open, onOpenChange, onAddService, onRedeployAll, onDevMode }: CommandPaletteProps) {
+export function CommandPalette({ open, onOpenChange, onAddNewService, onAddService, onRedeployAll, onDevMode }: CommandPaletteProps) {
   const [search, setSearch] = useState('');
   const [selectedIndex, setSelectedIndex] = useState(0);
 
@@ -107,6 +117,9 @@ export function CommandPalette({ open, onOpenChange, onAddService, onRedeployAll
 
   const handleSelect = (item: CommandItem) => {
     switch (item.id) {
+      case 'add-service':
+        onAddNewService();
+        break;
       case 'add-postgres':
         onAddService('postgres');
         break;

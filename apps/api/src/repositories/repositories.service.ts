@@ -1,4 +1,10 @@
-import { Repository, Role } from '@prisma/client';
+import {
+  BuildStrategy,
+  DeploymentBundleStatus,
+  DeploymentStatus,
+  Repository,
+  Role,
+} from '@prisma/client';
 import {
   DIGITALOCEAN_ACCESS_TOKEN_SECRET_NAME,
   ErrorCodes,
@@ -13,8 +19,12 @@ import { EncryptionService } from '../common/services/encryption.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { ProjectsService } from '../projects/projects.service';
 import { ConnectRepositoryDto } from './dto/connect-repository.dto';
+import { ScanEnvExampleDto, ScanEnvExampleResult } from './dto/scan-env-example.dto';
 import { GitHubRepo, GitHubService } from './github.service';
-import { WorkflowGeneratorService } from './workflow-generator.service';
+import {
+  ServiceBuildSpec,
+  WorkflowGeneratorService,
+} from './workflow-generator.service';
 
 const WORKFLOW_FILE_PATH = '.github/workflows/liftoff-deploy.yml';
 
@@ -192,15 +202,17 @@ export class RepositoriesService implements OnModuleInit {
         doToken,
       );
 
+      const serviceBuildSpecs = await this.buildServiceBuildSpecs(
+        targetEnvironment.id,
+        project.name,
+        targetEnvironment.name,
+      );
       const workflowContent = await this.workflowGeneratorService.generate({
         projectName: project.name,
         environmentId: targetEnvironment.id,
         branch: dto.branch,
-        imageRepository: `${project.name}/${targetEnvironment.name}`,
         liftoffApiUrl: this.getWebhookBaseUrl(),
-        buildStrategy: this.resolveBuildStrategy(targetEnvironment.configParsed),
-        dockerfilePath: this.resolveDockerfilePath(targetEnvironment.configParsed),
-        dockerBuildContext: this.resolveDockerBuildContext(targetEnvironment.configParsed),
+        services: serviceBuildSpecs,
         doToken,
         doAccountId: targetEnvironment.doAccountId,
       });
@@ -275,6 +287,130 @@ export class RepositoriesService implements OnModuleInit {
   }
 
   /**
+   * Scans a GitHub repo branch for `.env.example` (or `.env.sample` / `.env.template`)
+   * under the given source dir. Returns the parsed list of keys with optional
+   * default values + inline comment hints so the onboarding UI can pre-populate
+   * a "fill in your env vars" step before the first deploy.
+   *
+   * Tries each candidate filename in order; returns the first hit. If nothing
+   * matches, returns `{ foundAt: null, keys: [] }`.
+   */
+  public async scanEnvExample(
+    projectId: string,
+    userId: string,
+    dto: ScanEnvExampleDto,
+  ): Promise<ScanEnvExampleResult> {
+    await this.projectsService.assertProjectRole(projectId, userId);
+
+    const repository = await this.prismaService.repository.findUnique({
+      where: { projectId },
+      select: { fullName: true },
+    });
+    if (!repository) {
+      throw Exceptions.badRequest(
+        'Project has no connected repository to scan',
+        ErrorCodes.REPOSITORY_NOT_FOUND,
+      );
+    }
+
+    const githubToken = await this.getDecryptedGitHubTokenOrThrow(userId);
+    const sourceDir = this.normalizeSourceDir(dto.sourceDir);
+    const candidates = ['.env.example', '.env.sample', '.env.template'].map((name) =>
+      sourceDir ? `${sourceDir}/${name}` : name,
+    );
+
+    for (const path of candidates) {
+      const content = await this.githubService.fetchFileContent(
+        githubToken,
+        repository.fullName,
+        path,
+        dto.branch,
+      );
+      if (content === null) continue;
+      return { foundAt: path, keys: this.parseEnvExample(content) };
+    }
+
+    return { foundAt: null, keys: [] };
+  }
+
+  private normalizeSourceDir(sourceDir: string | undefined): string {
+    if (!sourceDir) return '';
+    const trimmed = sourceDir.replace(/^\.\/+/, '').replace(/\/+$/, '');
+    if (!trimmed || trimmed === '.') return '';
+    return trimmed;
+  }
+
+  /**
+   * Parses .env-style content. For each `KEY=value` line emits {key, defaultValue, hint}
+   * where `hint` is any preceding `# comment` line (treated as documentation for the key).
+   * Blank lines and inline comments are skipped. Quotes are stripped from values.
+   *
+   * This is intentionally NOT shared with VariablesService.parseEnvFile because the
+   * goals differ — that parser is strict (rejects invalid keys), this one captures
+   * hints + default values for UX purposes.
+   */
+  private parseEnvExample(content: string): Array<{
+    key: string;
+    defaultValue: string | null;
+    hint: string | null;
+  }> {
+    const out: Array<{ key: string; defaultValue: string | null; hint: string | null }> = [];
+    const lines = content.split(/\r?\n/);
+    let pendingHint: string | null = null;
+
+    for (const rawLine of lines) {
+      const trimmed = rawLine.trim();
+
+      if (!trimmed) {
+        pendingHint = null;
+        continue;
+      }
+
+      if (trimmed.startsWith('#')) {
+        pendingHint = trimmed.replace(/^#+\s*/, '').trim() || null;
+        continue;
+      }
+
+      const line = trimmed.startsWith('export ') ? trimmed.slice('export '.length).trim() : trimmed;
+      const eqIdx = line.indexOf('=');
+      if (eqIdx <= 0) {
+        pendingHint = null;
+        continue;
+      }
+
+      const key = line.slice(0, eqIdx).trim();
+      let value: string | null = line.slice(eqIdx + 1).trim();
+
+      // strip inline `# comment` only outside quotes
+      if (!value.startsWith('"') && !value.startsWith("'")) {
+        const hashIdx = value.indexOf(' #');
+        if (hashIdx >= 0) value = value.slice(0, hashIdx).trimEnd();
+      }
+
+      if (
+        (value.startsWith('"') && value.endsWith('"')) ||
+        (value.startsWith("'") && value.endsWith("'"))
+      ) {
+        value = value.slice(1, -1);
+      }
+
+      if (!/^[A-Z_][A-Z0-9_]*$/.test(key)) {
+        pendingHint = null;
+        continue;
+      }
+
+      out.push({
+        key,
+        defaultValue: value === '' ? null : value,
+        hint: pendingHint,
+      });
+      pendingHint = null;
+    }
+
+    return out;
+  }
+
+  /**
    * Returns the currently connected project repository, if any.
    */
   public async findByProject(projectId: string, userId: string): Promise<ConnectedRepository | null> {
@@ -290,6 +426,407 @@ export class RepositoriesService implements OnModuleInit {
     }
 
     return this.toConnectedRepository(repository);
+  }
+
+  /**
+   * Regenerates `.github/workflows/liftoff-deploy.yml` in the user's repo with
+   * a matrix entry for every current Service in the environment. Call this
+   * after any structural change to the env's services (added/removed/renamed)
+   * so the next push actually builds the right set of images.
+   *
+   * No-op when the project has no connected repository (the workflow file will
+   * be generated at connect time using the then-current service list).
+   */
+  public async syncWorkflowForEnvironment(environmentId: string, userId: string): Promise<void> {
+    const environment = await this.prismaService.environment.findFirst({
+      where: { id: environmentId, deletedAt: null },
+      select: {
+        id: true,
+        name: true,
+        gitBranch: true,
+        doAccountId: true,
+        project: {
+          select: {
+            id: true,
+            name: true,
+            repository: {
+              select: { id: true, fullName: true, branch: true },
+            },
+          },
+        },
+      },
+    });
+
+    if (!environment) {
+      throw Exceptions.notFound('Environment not found', ErrorCodes.ENVIRONMENT_NOT_FOUND);
+    }
+
+    const repository = environment.project.repository;
+    if (!repository) {
+      // No repo connected yet — workflow file gets created on first connect.
+      this.logger.log(
+        `syncWorkflowForEnvironment: skipping env ${environmentId} (no connected repository)`,
+      );
+      return;
+    }
+
+    const githubToken = await this.getDecryptedGitHubTokenOrThrow(userId);
+    const doToken = await this.getDecryptedDoTokenForDoAccount(environment.doAccountId, userId);
+
+    const serviceBuildSpecs = await this.buildServiceBuildSpecs(
+      environment.id,
+      environment.project.name,
+      environment.name,
+    );
+    const buildVariableKeys = await this.collectBuildVariableKeys(environment.id);
+    const workflowContent = await this.workflowGeneratorService.generate({
+      projectName: environment.project.name,
+      environmentId: environment.id,
+      branch: repository.branch,
+      liftoffApiUrl: this.getWebhookBaseUrl(),
+      services: serviceBuildSpecs,
+      buildVariableKeys,
+      doToken,
+      doAccountId: environment.doAccountId,
+    });
+
+    await this.githubService.commitFile(
+      githubToken,
+      repository.fullName,
+      WORKFLOW_FILE_PATH,
+      workflowContent,
+      `chore: sync Liftoff deploy workflow (${serviceBuildSpecs.length} service${
+        serviceBuildSpecs.length === 1 ? '' : 's'
+      }, ${buildVariableKeys.length} build var${buildVariableKeys.length === 1 ? '' : 's'})`,
+      repository.branch,
+    );
+
+    this.logger.log(
+      `Synced workflow file for env ${environmentId} (${serviceBuildSpecs.length} services, ${buildVariableKeys.length} build vars)`,
+    );
+  }
+
+  /**
+   * Pushes every BUILD or BOTH-scope variable in the env to GitHub Actions secrets
+   * as `LIFTOFF_BUILD_<KEY>`. Service-scope overrides env-scope on shared keys.
+   * Stale `LIFTOFF_BUILD_*` secrets whose key no longer exists in the vault are removed.
+   *
+   * No-op when the project has no connected repository.
+   *
+   * Phase 2 limitation: if two services have different BUILD values for the same key,
+   * only one is retained (last write wins). Per-service secret namespacing is Phase 2.5.
+   */
+  public async syncBuildVariablesForEnvironment(
+    environmentId: string,
+    userId: string,
+  ): Promise<void> {
+    const environment = await this.prismaService.environment.findFirst({
+      where: { id: environmentId, deletedAt: null },
+      select: {
+        id: true,
+        project: { select: { repository: { select: { fullName: true } } } },
+      },
+    });
+    if (!environment) {
+      throw Exceptions.notFound('Environment not found', ErrorCodes.ENVIRONMENT_NOT_FOUND);
+    }
+    const repository = environment.project.repository;
+    if (!repository) {
+      this.logger.log(
+        `syncBuildVariablesForEnvironment: skipping env ${environmentId} (no connected repository)`,
+      );
+      return;
+    }
+
+    const githubToken = await this.getDecryptedGitHubTokenOrThrow(userId);
+
+    const envBuildRows = await this.prismaService.environmentVariable.findMany({
+      where: { environmentId, scope: { in: ['BUILD', 'BOTH'] } },
+    });
+    const serviceBuildRows = await this.prismaService.serviceVariable.findMany({
+      where: {
+        service: { environmentId, deletedAt: null },
+        scope: { in: ['BUILD', 'BOTH'] },
+      },
+    });
+
+    const desired = new Map<string, string>();
+    for (const row of envBuildRows) {
+      try {
+        desired.set(row.key, this.encryptionService.decrypt(row.encryptedValue));
+      } catch {
+        this.logger.warn(`Skipping BUILD var ${row.key}: decryption failed`);
+      }
+    }
+    for (const row of serviceBuildRows) {
+      try {
+        desired.set(row.key, this.encryptionService.decrypt(row.encryptedValue));
+      } catch {
+        this.logger.warn(`Skipping BUILD var ${row.key}: decryption failed`);
+      }
+    }
+
+    for (const [key, value] of desired) {
+      try {
+        await this.githubService.upsertActionsSecret(
+          githubToken,
+          repository.fullName,
+          `LIFTOFF_BUILD_${key}`,
+          value,
+        );
+      } catch (error) {
+        this.logger.warn(
+          `Failed to upsert LIFTOFF_BUILD_${key} on ${repository.fullName}: ${
+            error instanceof Error ? error.message : 'unknown error'
+          }`,
+        );
+      }
+    }
+
+    try {
+      const existingSecrets = await this.githubService.listActionsSecrets(
+        githubToken,
+        repository.fullName,
+      );
+      for (const secretName of existingSecrets) {
+        if (!secretName.startsWith('LIFTOFF_BUILD_')) continue;
+        const key = secretName.slice('LIFTOFF_BUILD_'.length);
+        if (!desired.has(key)) {
+          await this.githubService
+            .deleteActionsSecret(githubToken, repository.fullName, secretName)
+            .catch((error) =>
+              this.logger.warn(
+                `Failed to delete stale ${secretName}: ${
+                  error instanceof Error ? error.message : 'unknown error'
+                }`,
+              ),
+            );
+        }
+      }
+    } catch (error) {
+      this.logger.warn(
+        `Failed to list Actions secrets for cleanup on ${repository.fullName}: ${
+          error instanceof Error ? error.message : 'unknown error'
+        }`,
+      );
+    }
+
+    this.logger.log(
+      `Synced ${desired.size} BUILD variables to ${repository.fullName} for env ${environmentId}`,
+    );
+  }
+
+  /**
+   * Triggers a fresh GitHub Actions run for the env. Used by the "Deploy now"
+   * button — works regardless of whether the env has any prior SUCCESS deployments
+   * (unlike `applyVariables` which reuses last good images).
+   *
+   * Re-syncs the workflow file first so we're guaranteed `workflow_dispatch` is
+   * present in the YAML — older workflows from before this feature don't have
+   * the trigger declared, which would fail with "Workflow does not have
+   * workflow_dispatch trigger" on dispatch. The sync is idempotent + cheap.
+   *
+   * After dispatch, the standard webhook → deploy-complete → bundle pipeline
+   * takes over. Returns the workflow file path so the UI can deep-link to the
+   * Actions tab on the repo.
+   */
+  public async triggerBuildForEnvironment(
+    environmentId: string,
+    userId: string,
+  ): Promise<{ workflowFile: string; ref: string; repository: string; bundleId: string }> {
+    const environment = await this.prismaService.environment.findFirst({
+      where: { id: environmentId, deletedAt: null },
+      select: {
+        id: true,
+        gitBranch: true,
+        project: {
+          select: {
+            id: true,
+            repository: { select: { fullName: true, branch: true } },
+          },
+        },
+        services: {
+          where: { deletedAt: null },
+          orderBy: { createdAt: 'asc' },
+          select: { id: true },
+        },
+      },
+    });
+    if (!environment) {
+      throw Exceptions.notFound('Environment not found', ErrorCodes.ENVIRONMENT_NOT_FOUND);
+    }
+    const repository = environment.project.repository;
+    if (!repository) {
+      throw Exceptions.badRequest(
+        'Project has no connected repository — connect one before triggering a build',
+        ErrorCodes.REPOSITORY_NOT_FOUND,
+      );
+    }
+    if (environment.services.length === 0) {
+      throw Exceptions.badRequest(
+        'Environment has no services — add one before triggering a build',
+        ErrorCodes.NOT_FOUND,
+      );
+    }
+    await this.projectsService.assertProjectRole(environment.project.id, userId, [
+      Role.OWNER,
+      Role.ADMIN,
+    ]);
+
+    // Re-sync the workflow file so we have `workflow_dispatch:` in the YAML.
+    // If this is a long-lived env whose workflow was committed before this
+    // feature, the dispatch call would 422 with "Workflow does not have
+    // workflow_dispatch trigger" otherwise.
+    await this.syncWorkflowForEnvironment(environmentId, userId);
+
+    // Cancel any in-flight deployments for this env so the deploy-complete
+    // callbacks from this build always pick OUR new bundle's rows (the handler
+    // selects the most recent QUEUED/BUILDING/PUSHING per service). Stale
+    // bundles flip to CANCELLED instead of timing out 30 min later.
+    await this.cancelInFlightDeploymentsForEnv(environmentId);
+
+    // Pre-create the bundle + per-service deployments BEFORE dispatching.
+    // GitHub Actions runs the matrix, each step calls deploy-complete with a
+    // serviceName — the handler finds these QUEUED rows and updates them. Without
+    // this pre-creation, every callback would fail with "No deployment in
+    // QUEUED/BUILDING/PUSHING state for service X".
+    const bundle = await this.prismaService.deploymentBundle.create({
+      data: {
+        environmentId,
+        status: DeploymentBundleStatus.IN_PROGRESS,
+        triggeredBy: `manual-dispatch:${userId}`,
+        startedAt: new Date(),
+        deployments: {
+          create: environment.services.map((service) => ({
+            environmentId,
+            serviceId: service.id,
+            status: DeploymentStatus.QUEUED,
+            branch: environment.gitBranch,
+            commitMessage: 'Manual deploy (workflow_dispatch)',
+            triggeredBy: userId,
+          })),
+        },
+      },
+      select: { id: true },
+    });
+
+    const githubToken = await this.getDecryptedGitHubTokenOrThrow(userId);
+    const workflowFilename = WORKFLOW_FILE_PATH.split('/').pop() ?? 'liftoff-deploy.yml';
+    const ref = environment.gitBranch || repository.branch || 'main';
+
+    try {
+      await this.githubService.dispatchWorkflow(
+        githubToken,
+        repository.fullName,
+        workflowFilename,
+        ref,
+      );
+    } catch (error) {
+      // Roll back the bundle on dispatch failure so we don't leave orphan
+      // QUEUED deployments to time out 30 min later.
+      await this.prismaService.deployment
+        .updateMany({
+          where: { bundleId: bundle.id },
+          data: { status: DeploymentStatus.CANCELLED, completedAt: new Date() },
+        })
+        .catch(() => undefined);
+      await this.prismaService.deploymentBundle
+        .update({
+          where: { id: bundle.id },
+          data: { status: DeploymentBundleStatus.CANCELLED, completedAt: new Date() },
+        })
+        .catch(() => undefined);
+
+      this.logger.warn(
+        `dispatchWorkflow failed for ${repository.fullName}/${workflowFilename}@${ref}: ${
+          error instanceof Error ? error.message : 'unknown error'
+        }`,
+      );
+      throw new AppException(
+        'Failed to trigger GitHub Actions workflow — check that the repo still grants Liftoff access',
+        HttpStatus.BAD_GATEWAY,
+        ErrorCodes.REPOSITORY_ACCESS_DENIED,
+      );
+    }
+
+    this.logger.log(
+      `Dispatched workflow ${workflowFilename} on ${repository.fullName}@${ref} (bundle ${bundle.id}) for env ${environmentId}`,
+    );
+
+    return {
+      workflowFile: workflowFilename,
+      ref,
+      repository: repository.fullName,
+      bundleId: bundle.id,
+    };
+  }
+
+  /**
+   * Cancels every Deployment in the env still in an active state, plus their
+   * bundles. Called by the Deploy-now flow so the new bundle's QUEUED rows are
+   * the unambiguous targets for arriving deploy-complete callbacks.
+   */
+  private async cancelInFlightDeploymentsForEnv(environmentId: string): Promise<void> {
+    const activeStatuses: DeploymentStatus[] = [
+      DeploymentStatus.PENDING,
+      DeploymentStatus.QUEUED,
+      DeploymentStatus.BUILDING,
+      DeploymentStatus.PUSHING,
+    ];
+    const stuck = await this.prismaService.deployment.findMany({
+      where: { environmentId, status: { in: activeStatuses } },
+      select: { id: true, bundleId: true },
+    });
+    if (stuck.length === 0) return;
+
+    const completedAt = new Date();
+    await this.prismaService.deployment.updateMany({
+      where: { id: { in: stuck.map((d) => d.id) } },
+      data: {
+        status: DeploymentStatus.CANCELLED,
+        completedAt,
+        errorMessage: 'Superseded by a manual Deploy-now trigger',
+      },
+    });
+
+    const affectedBundles = Array.from(
+      new Set(stuck.map((d) => d.bundleId).filter((id): id is string => id !== null)),
+    );
+    if (affectedBundles.length > 0) {
+      await this.prismaService.deploymentBundle.updateMany({
+        where: { id: { in: affectedBundles } },
+        data: { status: DeploymentBundleStatus.CANCELLED, completedAt },
+      });
+    }
+
+    this.logger.log(
+      `Cancelled ${stuck.length} in-flight deployments before manual Deploy-now (env ${environmentId})`,
+    );
+  }
+
+  /**
+   * Returns unique BUILD/BOTH-scope variable keys across env + service vars.
+   * Used by `syncWorkflowForEnvironment` to emit the workflow `env:` block.
+   */
+  private async collectBuildVariableKeys(environmentId: string): Promise<string[]> {
+    const [envRows, serviceRows] = await Promise.all([
+      this.prismaService.environmentVariable.findMany({
+        where: { environmentId, scope: { in: ['BUILD', 'BOTH'] } },
+        select: { key: true },
+      }),
+      this.prismaService.serviceVariable.findMany({
+        where: {
+          service: { environmentId, deletedAt: null },
+          scope: { in: ['BUILD', 'BOTH'] },
+        },
+        select: { key: true },
+      }),
+    ]);
+
+    const keys = new Set<string>();
+    for (const row of envRows) keys.add(row.key);
+    for (const row of serviceRows) keys.add(row.key);
+    return Array.from(keys).sort();
   }
 
   private decryptSecret(encryptedSecret: string): string {
@@ -397,45 +934,48 @@ export class RepositoriesService implements OnModuleInit {
     });
   }
 
-  private resolveDockerfilePath(configParsed: unknown): string {
-    const defaultDockerfilePath = 'Dockerfile';
-    if (!configParsed) {
-      return defaultDockerfilePath;
+  /**
+   * Reads the env's Service rows and emits one ServiceBuildSpec per service so
+   * the workflow generator can fan out into a matrix build. Single-service envs
+   * (the Phase 1 common case) use `<project>/<env>` as the image repository so
+   * pre-multi-service deployments and image-by-repository matching in
+   * DeploymentProcessor keep working without a stack rebuild. Multi-service envs
+   * scope each service's images under `<project>/<env>/<service>` so the spec
+   * patcher can route the right tag to the right service entry.
+   */
+  private async buildServiceBuildSpecs(
+    environmentId: string,
+    projectName: string,
+    environmentName: string,
+  ): Promise<ServiceBuildSpec[]> {
+    const services = await this.prismaService.service.findMany({
+      where: { environmentId, deletedAt: null },
+      orderBy: { createdAt: 'asc' },
+    });
+
+    if (services.length === 0) {
+      throw Exceptions.internalError(
+        'Environment has no services to build',
+        ErrorCodes.INTERNAL_ERROR,
+      );
     }
 
-    const parsedConfig = safeParseLiftoffConfig(configParsed);
-    if (!parsedConfig.success) {
-      return defaultDockerfilePath;
-    }
-
-    return parsedConfig.data.build.dockerfile_path;
+    const useNamespacedRepos = services.length > 1;
+    return services.map((service) => ({
+      name: service.name,
+      context: service.sourceDir || '.',
+      dockerfilePath: service.dockerfilePath || 'Dockerfile',
+      buildStrategy: this.mapBuildStrategy(service.buildStrategy),
+      imageRepository: useNamespacedRepos
+        ? `${projectName}/${environmentName}/${service.name}`
+        : `${projectName}/${environmentName}`,
+    }));
   }
 
-  private resolveDockerBuildContext(configParsed: unknown): string {
-    const defaultDockerBuildContext = '.';
-    if (!configParsed) {
-      return defaultDockerBuildContext;
-    }
-
-    const parsedConfig = safeParseLiftoffConfig(configParsed);
-    if (!parsedConfig.success) {
-      return defaultDockerBuildContext;
-    }
-
-    return parsedConfig.data.build.context;
-  }
-
-  private resolveBuildStrategy(configParsed: unknown): 'auto' | 'dockerfile' | 'nixpacks' {
-    if (!configParsed) {
-      return 'auto';
-    }
-
-    const parsedConfig = safeParseLiftoffConfig(configParsed);
-    if (!parsedConfig.success) {
-      return 'auto';
-    }
-
-    return parsedConfig.data.build.strategy;
+  private mapBuildStrategy(strategy: BuildStrategy): 'auto' | 'dockerfile' | 'nixpacks' {
+    if (strategy === BuildStrategy.DOCKERFILE) return 'dockerfile';
+    if (strategy === BuildStrategy.NIXPACKS) return 'nixpacks';
+    return 'auto';
   }
 
   private async syncWebhookUrlsOnBoot(): Promise<void> {

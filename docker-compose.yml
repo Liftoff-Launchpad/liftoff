@@ -27,16 +27,20 @@ services:
       test: ['CMD', 'redis-cli', 'ping']
       interval: 5s
 
-  ngrok:
-    image: ngrok/ngrok:latest
-    container_name: liftoff_ngrok
-    command: ['http', '--url=aniya-preservable-harriett.ngrok-free.dev', 'api:4000']
-    environment:
-      - NGROK_AUTHTOKEN=${NGROK_AUTHTOKEN}
-    ports:
-      - '4040:4040'
-    depends_on:
-      - api
+  # ngrok is opt-in. Run on the host (`ngrok http 4000`) and set WEBHOOK_BASE_URL
+  # in apps/api/.env. To use the containerised ngrok instead:
+  #   1. Put NGROK_AUTHTOKEN + your reserved url in a .env next to this file
+  #   2. Re-enable this service and pass --url=<your-domain>
+  # ngrok:
+  #   image: ngrok/ngrok:latest
+  #   container_name: liftoff_ngrok
+  #   command: ['http', '--url=<your-reserved-domain>', 'api:4000']
+  #   environment:
+  #     - NGROK_AUTHTOKEN=${NGROK_AUTHTOKEN}
+  #   ports:
+  #     - '4040:4040'
+  #   depends_on:
+  #     - api
 
   api:
     build:
@@ -51,14 +55,22 @@ services:
       - ./apps/api/prisma:/app/apps/api/prisma
       - ./packages/shared/src:/app/packages/shared/src
       - ./packages/config:/app/packages/config
+      # The infra runner spawns Pulumi as a subprocess and ts-node-compiles the
+      # stack file fresh on every run, so the source must be live-mounted —
+      # otherwise the container holds whatever was baked in at image-build time
+      # and shape changes (e.g. the multi-service migration) cause Pulumi to
+      # fail with TS2352 mismatches between the runner's args and the stale stack.
+      - ./packages/pulumi-components/src:/app/packages/pulumi-components/src
       - api_node_modules:/app/node_modules
       - api_apps_node_modules:/app/apps/api/node_modules
     env_file:
       - ./apps/api/.env
+    # These override .env so localhost/127.0.0.1 in apps/api/.env still works on the host.
+    # WEBHOOK_BASE_URL is intentionally NOT overridden here — it must come from apps/api/.env
+    # (set it to whatever public tunnel URL you're running, e.g. your ngrok URL).
     environment:
       - DATABASE_URL=postgresql://liftoff:liftoff@postgres:5432/liftoff
       - REDIS_URL=redis://redis:6379
-      - WEBHOOK_BASE_URL=https://aniya-preservable-harriett.ngrok-free.dev
     depends_on:
       postgres:
         condition: service_healthy

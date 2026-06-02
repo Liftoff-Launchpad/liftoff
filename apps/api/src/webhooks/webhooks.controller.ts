@@ -61,12 +61,15 @@ export class WebhooksController {
   ): Promise<{ received: true }> {
     const payload: DeployCompletePayload = {
       environmentId: dto.environmentId,
-      imageUri: dto.imageUri,
+      serviceName: dto.serviceName,
+      imageUri: dto.imageUri && dto.imageUri.length > 0 ? dto.imageUri : undefined,
       commitSha: dto.commitSha,
       status: dto.status,
       runUrl: dto.runUrl,
       buildStrategy: dto.buildStrategy,
       buildPlan: dto.buildPlan,
+      buildLogsBase64:
+        dto.buildLogsBase64 && dto.buildLogsBase64.length > 0 ? dto.buildLogsBase64 : undefined,
     };
 
     await this.webhooksService.handleDeployComplete(payload, secretHeader);

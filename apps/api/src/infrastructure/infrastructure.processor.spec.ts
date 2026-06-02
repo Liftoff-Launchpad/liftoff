@@ -139,6 +139,10 @@ describe('InfrastructureProcessor', () => {
     broadcastInfraProgress: jest.fn(),
   };
 
+  const variablesServiceMock = {
+    resolveRuntimeVariablesForService: jest.fn().mockResolvedValue([]),
+  };
+
   beforeEach(() => {
     jest.clearAllMocks();
     processor = new InfrastructureProcessor(
@@ -147,6 +151,7 @@ describe('InfrastructureProcessor', () => {
       doApiServiceMock as unknown as DoApiService,
       pulumiRunnerServiceMock as unknown as PulumiRunnerService,
       eventsGatewayMock as unknown as EventsGateway,
+      variablesServiceMock as never,
     );
   });
 

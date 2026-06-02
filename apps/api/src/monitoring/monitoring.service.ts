@@ -35,35 +35,85 @@ export class MonitoringService {
 
   /**
    * Fetches application runtime logs from DigitalOcean App Platform.
+   *
+   * Returns `[]` (not a 4xx) when the env hasn't been provisioned yet — the UI
+   * polls these endpoints frequently and we don't want to flood the API logger
+   * with `App Platform outputs are missing` warnings on every cycle.
+   *
+   * `serviceName` (optional) scopes the log feed to a single App Platform component.
+   * Liftoff's App Platform component name is `<serviceName>-<envName>` (≤32 chars),
+   * so we compute and pass that to DO. When omitted, returns env-wide logs.
    */
   public async getLogs(
     environmentId: string,
     userId: string,
     logType: 'BUILD' | 'DEPLOY' | 'RUN' | 'RUN_RESTARTED' = 'RUN',
     limit: number = 200,
+    serviceName?: string,
   ): Promise<AppLogEntry[]> {
     const environment = await this.getEnvironmentWithAccess(environmentId, userId);
     const appContext = await this.getAppContext(environment);
 
     if (!appContext) {
-      throw Exceptions.badRequest('App Platform outputs are missing', ErrorCodes.DEPLOYMENT_NO_INFRA);
+      return [];
     }
 
+    const componentName = await this.resolveAppComponentName(environmentId, serviceName);
+
     const doToken = this.decryptDoToken(environment.doAccount.doToken);
-    const rawLogs = await this.doApiService.getAppRuntimeLogs(doToken, appContext.appId, logType, environment.doAccountId);
+    const rawLogs = await this.doApiService.getAppRuntimeLogs(
+      doToken,
+      appContext.appId,
+      logType,
+      environment.doAccountId,
+      componentName,
+    );
 
     const entries: AppLogEntry[] = rawLogs.slice(-limit).map((line, index) => ({
       line,
       timestamp: new Date(Date.now() - (rawLogs.length - index - 1) * 1000).toISOString(),
       level: this.detectLogLevel(line),
-      source: 'do-app-platform',
+      source: componentName ?? 'do-app-platform',
     }));
 
     return entries;
   }
 
   /**
+   * Computes the App Platform component name that matches what the Pulumi
+   * component (`app-platform-app.ts:toServiceSpec`) sets. Stays in sync via
+   * the same `<serviceName>-<envName>` truncate-to-32 pattern.
+   *
+   * Returns undefined when serviceName is empty (callers pass undefined → DO
+   * returns env-wide logs).
+   */
+  private async resolveAppComponentName(
+    environmentId: string,
+    serviceName: string | undefined,
+  ): Promise<string | undefined> {
+    if (!serviceName) return undefined;
+
+    const env = await this.prismaService.environment.findUnique({
+      where: { id: environmentId },
+      select: { name: true },
+    });
+    if (!env) return undefined;
+
+    const kebab = `${serviceName}-${env.name}`
+      .toLowerCase()
+      .replace(/[^a-z0-9-]+/g, '-')
+      .replace(/-+/g, '-')
+      .replace(/^-+|-+$/g, '');
+    const truncated = kebab.slice(0, 32).replace(/-+$/, '');
+    return truncated || serviceName.toLowerCase();
+  }
+
+  /**
    * Fetches application metrics from DigitalOcean monitoring API.
+   *
+   * Same soft-fail as `getLogs`: returns `[]` when the env has no Pulumi stack
+   * yet. The frontend treats `[]` as "no data" and shows an empty chart, which
+   * is much better UX than a 400 + console-spam every 30s.
    */
   public async getMetrics(
     environmentId: string,
@@ -74,7 +124,7 @@ export class MonitoringService {
     const appContext = await this.getAppContext(environment);
 
     if (!appContext) {
-      throw Exceptions.badRequest('App Platform outputs are missing', ErrorCodes.DEPLOYMENT_NO_INFRA);
+      return [];
     }
 
     const doToken = this.decryptDoToken(environment.doAccount.doToken);
@@ -85,8 +135,17 @@ export class MonitoringService {
 
   /**
    * Streams live application logs to a WebSocket client.
+   *
+   * `serviceName` (optional) scopes the stream to a single App Platform component.
+   * Drawer Logs tab passes the selected service's name; the env-wide logs panel
+   * passes nothing.
    */
-  public async streamLogs(environmentId: string, userId: string, socket: Socket): Promise<void> {
+  public async streamLogs(
+    environmentId: string,
+    userId: string,
+    socket: Socket,
+    serviceName?: string,
+  ): Promise<void> {
     const environment = await this.getEnvironmentWithAccess(environmentId, userId);
     const appContext = await this.getAppContext(environment);
 
@@ -95,6 +154,8 @@ export class MonitoringService {
       return;
     }
 
+    const componentName = await this.resolveAppComponentName(environmentId, serviceName);
+
     const doToken = this.decryptDoToken(environment.doAccount.doToken);
     const logGenerator = this.doApiService.getLiveAppLogs(
       doToken,
@@ -102,6 +163,7 @@ export class MonitoringService {
       'RUN',
       5000,
       environment.doAccountId,
+      componentName,
     );
 
     socket.on('disconnect', () => {

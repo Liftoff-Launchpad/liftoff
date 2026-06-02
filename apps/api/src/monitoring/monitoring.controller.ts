@@ -16,17 +16,25 @@ export class MonitoringController {
   public constructor(private readonly monitoringService: MonitoringService) {}
 
   /**
-   * Fetches application logs.
+   * Fetches application logs. When `service` is provided, scopes to that App
+   * Platform component (per-service logs); otherwise returns env-wide logs.
    */
   @Get('logs')
   public getLogs(
     @Param('environmentId') environmentId: string,
     @Query('type') type?: 'BUILD' | 'DEPLOY' | 'RUN' | 'RUN_RESTARTED',
     @Query('limit') limit?: string,
+    @Query('service') service?: string,
     @CurrentUser() user?: User,
   ) {
     const numLimit = limit ? Math.min(parseInt(limit, 10), 500) : 200;
-    return this.monitoringService.getLogs(environmentId, user?.id ?? '', type ?? 'RUN', numLimit);
+    return this.monitoringService.getLogs(
+      environmentId,
+      user?.id ?? '',
+      type ?? 'RUN',
+      numLimit,
+      service?.trim() || undefined,
+    );
   }
 
   /**
