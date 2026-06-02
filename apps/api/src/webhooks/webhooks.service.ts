@@ -668,6 +668,34 @@ export class WebhooksService {
   }
 
   /**
+   * Strips GitHub Actions workflow-command markers from a single log line,
+   * returning the human-readable remainder — or `null` for a pure structural
+   * marker that carries no message (e.g. `::endgroup::`) so callers drop it.
+   *
+   * Handles both marker dialects the workflow can emit:
+   *   - legacy:  `##[group]Title`, `##[endgroup]`, `##[error]msg`
+   *   - current: `::group::Title`, `::endgroup::`, `::error file=a,line=1::msg`
+   * Group/section titles are preserved (they're useful headers); bare markers
+   * with no value are dropped.
+   */
+  private cleanWorkflowLogLine(raw: string): string | null {
+    // Legacy `##[command]` prefix — strip it, keep any trailing text.
+    let line = raw.replace(/^##\[[^\]]+\]\s*/, '');
+
+    // Current `::command[ params]::value` form.
+    const tokenMatch = /^::[a-z-]+(?:\s+[^:]*)?::(.*)$/i.exec(line);
+    if (tokenMatch) {
+      const value = (tokenMatch[1] ?? '').trim();
+      if (value.length === 0) {
+        return null; // e.g. `::endgroup::`
+      }
+      line = value; // e.g. `::group::nixpacks build` -> `nixpacks build`
+    }
+
+    return line;
+  }
+
+  /**
    * Extracts the last meaningful chunk of build output for the deployment's
    * one-line errorMessage summary. Looks for the last "ERROR" / "FAILED" /
    * "error:" / Docker error marker; falls back to the last non-empty line.
@@ -675,7 +703,7 @@ export class WebhooksService {
   private extractErrorTail(logs: string): string | null {
     const lines = logs
       .split(/\r?\n/)
-      .map((line) => line.replace(/^##\[[^\]]+\]\s*/, '').trim())
+      .map((line) => this.cleanWorkflowLogLine(line)?.trim() ?? '')
       .filter((line) => line.length > 0);
     if (lines.length === 0) return null;
 
@@ -714,17 +742,21 @@ export class WebhooksService {
    * thrown — losing logs shouldn't fail the webhook.
    */
   private async persistBuildLogs(deploymentId: string, logs: string): Promise<void> {
-    const lines = logs.split(/\r?\n/).filter((line) => line.length > 0);
-    if (lines.length === 0) return;
+    // Clean each line through the shared marker stripper, dropping pure
+    // structural markers (e.g. `::endgroup::`) and blanks. This is what keeps
+    // the viewer free of `::group::`/`##[...]` noise.
+    const cleaned = logs
+      .split(/\r?\n/)
+      .map((line) => this.cleanWorkflowLogLine(line))
+      .filter((line): line is string => line !== null && line.length > 0);
+    if (cleaned.length === 0) return;
 
     const baseTime = Date.now();
-    const rows = lines.map((line, index) => {
-      const isError = /\b(error|failed|fatal|denied|aborted)\b/i.test(line);
+    const rows = cleaned.map((message, index) => {
+      const isError = /\b(error|failed|fatal|denied|aborted)\b/i.test(message);
       return {
         deploymentId,
-        // Strip GitHub Actions workflow command markers (`##[group]`, `##[endgroup]`,
-        // `##[error]`) since they're noise in our viewer.
-        message: line.replace(/^##\[[^\]]+\]\s*/, ''),
+        message,
         level: isError ? ('ERROR' as const) : ('INFO' as const),
         source: 'build',
         // Stable monotonic timestamps so the logs render in workflow order.
