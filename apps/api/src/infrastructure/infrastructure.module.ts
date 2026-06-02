@@ -8,6 +8,7 @@ import { InfrastructureActiveDeploymentCheckerService } from './infrastructure-a
 import { InfrastructureProcessor } from './infrastructure.processor';
 import { PulumiRunnerService } from './pulumi-runner.service';
 import { InfrastructureService } from './infrastructure.service';
+import { GraphCompilerService } from './graph-compiler.service';
 
 /**
  * Infrastructure module for preview/provision/destroy operations.
@@ -23,7 +24,8 @@ import { InfrastructureService } from './infrastructure.service';
     PulumiRunnerService,
     InfrastructureProcessor,
     InfrastructureActiveDeploymentCheckerService,
+    GraphCompilerService,
   ],
-  exports: [InfrastructureService, PulumiRunnerService],
+  exports: [InfrastructureService, PulumiRunnerService, GraphCompilerService],
 })
 export class InfrastructureModule {}

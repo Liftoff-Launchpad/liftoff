@@ -27,6 +27,7 @@ import {
   QUEUE_NAMES,
 } from '../queues/queue.constants';
 import { VariablesService } from '../variables/variables.service';
+import { GraphCompilerService } from './graph-compiler.service';
 import { PulumiRunnerService } from './pulumi-runner.service';
 import {
   AppPlatformStackArgs,
@@ -102,6 +103,7 @@ export class InfrastructureProcessor extends WorkerHost {
     private readonly pulumiRunnerService: PulumiRunnerService,
     private readonly eventsGateway: EventsGateway,
     private readonly variablesService: VariablesService,
+    private readonly graphCompilerService: GraphCompilerService,
   ) {
     super();
   }
@@ -148,6 +150,10 @@ export class InfrastructureProcessor extends WorkerHost {
       : this.resolveServiceImagesSingle(config, job.data.imageUri);
     const serviceVariables = await this.resolveServiceVariablesForEnv(deployment.environment.id);
 
+    // Compile the interactive graph: which managed resources to provision and
+    // which connection env vars to auto-inject into services (Phase B).
+    const compiledGraph = await this.graphCompilerService.compile(deployment.environment.id);
+
     const stackArgs: AppPlatformStackArgs = {
       projectName: deployment.environment.project.name,
       projectId: deployment.environment.project.id,
@@ -158,6 +164,8 @@ export class InfrastructureProcessor extends WorkerHost {
       config,
       serviceImages,
       serviceVariables,
+      resources: compiledGraph.resources,
+      bindings: compiledGraph.bindings,
     };
 
     const runResult = await this.runProvisionWithTimeout(deployment.id, {
@@ -292,6 +300,15 @@ export class InfrastructureProcessor extends WorkerHost {
           status: 'SUCCESS',
           completedAt: new Date(),
         },
+      });
+    }
+
+    // Graph resources are now live — flip the ones we just provisioned to ACTIVE
+    // so the canvas reflects their provisioned state.
+    if (compiledGraph.resourceIds.length > 0) {
+      await this.prismaService.resource.updateMany({
+        where: { id: { in: compiledGraph.resourceIds }, deletedAt: null },
+        data: { status: 'ACTIVE' },
       });
     }
 

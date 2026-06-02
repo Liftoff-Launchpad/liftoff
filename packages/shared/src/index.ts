@@ -7,6 +7,7 @@ export * from './constants/websocket-events';
 export * from './constants/wizard-defaults';
 export * from './constants/templates';
 export * from './dockerfile-templates';
+export * from './bindings/binding-templates';
 export * from './schemas/liftoff-yml.schema';
 export * from './schemas/pagination.schema';
 export * from './types/deployment';

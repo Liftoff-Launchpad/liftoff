@@ -7,6 +7,7 @@ import {
   Circle,
   Code2,
   LayoutGrid,
+  Loader2,
   MessageSquare,
   MoreHorizontal,
   Plus,
@@ -42,6 +43,12 @@ interface CanvasToolbarProps {
   logsOpen: boolean;
   /** Toggle the env-wide Logs slide-out (streams all services interleaved). */
   onLogsToggle: () => void;
+  /** Apply the graph — provision resources + redeploy services with bindings. */
+  onDeploy: () => void;
+  /** Whether an apply is currently in flight. */
+  deploying: boolean;
+  /** Disable Deploy when there's no environment to apply yet. */
+  canDeploy: boolean;
 }
 
 function getProjectStatus(nodes: Array<{ data: { status?: DeploymentStatusType } }>): {
@@ -72,6 +79,9 @@ export function CanvasToolbar({
   onActivityToggle,
   logsOpen,
   onLogsToggle,
+  onDeploy,
+  deploying,
+  canDeploy,
 }: CanvasToolbarProps): JSX.Element {
   const [menuOpen, setMenuOpen] = useState(false);
   const status = getProjectStatus(nodes);
@@ -156,9 +166,18 @@ export function CanvasToolbar({
           <MessageSquare className="h-4 w-4" />
           Agent
         </Button>
-        <Button onClick={onAddClick} className="gap-2">
+        <Button onClick={onAddClick} variant="secondary" className="gap-2">
           <Plus className="h-4 w-4" />
           Add
+        </Button>
+        <Button
+          onClick={onDeploy}
+          disabled={deploying || !canDeploy}
+          className="gap-2"
+          title="Provision resources and redeploy services with connection variables"
+        >
+          {deploying ? <Loader2 className="h-4 w-4 animate-spin" /> : <Rocket className="h-4 w-4" />}
+          {deploying ? 'Deploying…' : 'Deploy'}
         </Button>
         <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
           <DropdownMenuTrigger asChild>

@@ -47,11 +47,17 @@ interface DrawerVariablesTabProps {
   serviceId: string;
   /** Environment.id — required to load env-scoped variables (inherited by all services). */
   environmentId: string;
+  /** Vars auto-injected into this service by connected resources/services (read-only). */
+  autoInjected?: Array<{ name: string; source: string }>;
 }
 
 type Scope = 'env' | 'service';
 
-export function DrawerVariablesTab({ serviceId, environmentId }: DrawerVariablesTabProps) {
+export function DrawerVariablesTab({
+  serviceId,
+  environmentId,
+  autoInjected = [],
+}: DrawerVariablesTabProps) {
   const [addingScope, setAddingScope] = useState<Scope | null>(null);
   const [rawEditorOpen, setRawEditorOpen] = useState(false);
   const [rawEditorScope, setRawEditorScope] = useState<Scope>('env');
@@ -84,6 +90,26 @@ export function DrawerVariablesTab({ serviceId, environmentId }: DrawerVariables
 
   return (
     <TabsContent value="variables" className="m-0 p-8">
+      {autoInjected.length > 0 && (
+        <div className="mb-6 rounded-lg border border-blue-500/25 bg-blue-500/5 p-4">
+          <h4 className="text-sm font-medium text-blue-300">Auto-injected from connections</h4>
+          <p className="mt-1 text-xs text-muted-foreground">
+            These are set automatically at deploy time from edges drawn on the canvas. You don&apos;t
+            need to add them — set your own var of the same name to override.
+          </p>
+          <ul className="mt-3 space-y-1.5">
+            {autoInjected.map((entry) => (
+              <li key={`${entry.source}-${entry.name}`} className="flex items-center gap-2 text-sm">
+                <code className="rounded bg-background/60 px-1.5 py-0.5 font-mono text-xs text-foreground">
+                  {entry.name}
+                </code>
+                <span className="text-xs text-muted-foreground">← {entry.source}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h4 className="text-lg font-semibold">Variables</h4>

@@ -23,6 +23,11 @@ export interface CanvasNode {
     lastDeployTime?: string;
     buildStrategy?: string;
     runtimeSummary?: string;
+    // Resource-node fields (database/redis/storage nodes backed by Resource rows).
+    resourceId?: string;
+    resourceKind?: 'POSTGRES' | 'REDIS' | 'SPACES_BUCKET';
+    resourceStatus?: 'DRAFT' | 'PROVISIONING' | 'ACTIVE' | 'FAILED' | 'DESTROYING';
+    isStaged?: boolean;
   };
 }
 
@@ -30,6 +35,10 @@ export interface CanvasEdge {
   id: string;
   source: string;
   target: string;
+  /** Env vars this edge auto-injects into the target service on deploy. */
+  injectedVars?: string[];
+  /** Short edge label, e.g. "DATABASE_URL" or "DATABASE_URL +2". */
+  label?: string;
 }
 
 export interface CanvasState {

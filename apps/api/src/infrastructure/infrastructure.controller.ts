@@ -37,6 +37,19 @@ export class InfrastructureController {
   }
 
   /**
+   * Applies the interactive graph — provisions managed resources and redeploys
+   * services with connection env vars injected. Reuses existing images (no
+   * rebuild). This is the canvas "Deploy" action.
+   */
+  @Post('apply')
+  public applyGraph(
+    @Param('environmentId') environmentId: string,
+    @CurrentUser() user: User,
+  ): Promise<{ bundleId: string; deploymentCount: number }> {
+    return this.infrastructureService.applyGraph(environmentId, user.id);
+  }
+
+  /**
    * Queues infrastructure destroy for the specified environment stack.
    */
   @Delete()

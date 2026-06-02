@@ -179,10 +179,18 @@ export class ServicesService {
     const context = await this.getServiceContext(serviceId);
     await this.projectsService.assertProjectRole(context.projectId, userId, [Role.OWNER]);
 
-    await this.prismaService.service.update({
-      where: { id: serviceId },
-      data: { deletedAt: new Date() },
-    });
+    // Service is SOFT-deleted, so the Connection FK cascade never fires. Drop the
+    // service's graph edges (as consumer target or link source) so getCanvas and
+    // connections.findAll don't leak dangling edges — mirrors ResourcesService.delete.
+    await this.prismaService.$transaction([
+      this.prismaService.connection.deleteMany({
+        where: { OR: [{ targetServiceId: serviceId }, { sourceServiceId: serviceId }] },
+      }),
+      this.prismaService.service.update({
+        where: { id: serviceId },
+        data: { deletedAt: new Date() },
+      }),
+    ]);
 
     await this.syncWorkflowSafely(context.service.environmentId, userId);
   }

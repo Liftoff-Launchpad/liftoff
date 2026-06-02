@@ -21,6 +21,8 @@ import { ProjectsModule } from './projects/projects.module';
 import { QueuesModule } from './queues/queues.module';
 import { RepositoriesModule } from './repositories/repositories.module';
 import { ServicesModule } from './services/services.module';
+import { ResourcesModule } from './resources/resources.module';
+import { ConnectionsModule } from './connections/connections.module';
 import { UploadModule } from './upload/upload.module';
 import { UsersModule } from './users/users.module';
 import { VariablesModule } from './variables/variables.module';
@@ -96,6 +98,8 @@ import { CanvasModule } from './canvas/canvas.module';
     EnvironmentsModule,
     RepositoriesModule,
     ServicesModule,
+    ResourcesModule,
+    ConnectionsModule,
     VariablesModule,
     DeploymentsModule,
     DOAccountsModule,

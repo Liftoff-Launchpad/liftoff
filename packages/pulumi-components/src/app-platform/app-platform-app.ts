@@ -10,9 +10,25 @@ type DocrImageReference = {
 };
 
 export interface AppPlatformDatabaseArgs {
+  /** Unique name within the App's databases[] block. */
+  name: string;
   clusterName: pulumi.Input<string>;
-  dbName: pulumi.Input<string>;
-  dbUser: pulumi.Input<string>;
+  /** App Platform engine code. PG for Postgres, REDIS for Redis/Valkey. */
+  engine: 'PG' | 'REDIS';
+  dbName?: pulumi.Input<string>;
+  dbUser?: pulumi.Input<string>;
+}
+
+/**
+ * An env var injected into a service from a graph edge (Phase B). The value is a
+ * live `pulumi.Input` resolved from the source resource's outputs (e.g. a managed
+ * DB connection uri), so secrets never pass through the API/DB.
+ */
+export interface AppPlatformBindingEnv {
+  key: string;
+  value: pulumi.Input<string>;
+  /** Emit as App Platform SECRET (encrypted) vs GENERAL. */
+  secret: boolean;
 }
 
 /**
@@ -38,6 +54,11 @@ export interface AppPlatformServiceSpec {
    * Platform `SECRET` type (DO encrypts on its side); `kind: 'plain'` → `GENERAL` type.
    */
   variables: AppPlatformVariable[];
+  /**
+   * Env vars auto-injected from graph edges (resource bindings / service links).
+   * Lower precedence than `variables` — a user var of the same key wins.
+   */
+  bindings?: AppPlatformBindingEnv[];
   /** Optional HTTP healthcheck path; if omitted, App Platform falls back to TCP probe. */
   healthCheckPath?: string;
 }
@@ -61,7 +82,11 @@ export interface AppPlatformAppArgs {
   region: string;
   /** One spec entry per Service row in the env. Phase 1 typically length 1. */
   services: AppPlatformServiceSpec[];
-  database?: AppPlatformDatabaseArgs;
+  /**
+   * Managed databases (Postgres/Redis) to attach to the App. Attaching them adds
+   * the App as a trusted source on the cluster firewall so services can connect.
+   */
+  databases?: AppPlatformDatabaseArgs[];
   provider: digitalocean.Provider;
 }
 
@@ -100,18 +125,16 @@ export class AppPlatformApp extends pulumi.ComponentResource {
           name: appName,
           region: args.region,
           services: serviceEntries,
-          ...(args.database
+          ...(args.databases && args.databases.length > 0
             ? {
-                databases: [
-                  {
-                    name: 'database',
-                    clusterName: args.database.clusterName,
-                    dbName: args.database.dbName,
-                    dbUser: args.database.dbUser,
-                    engine: 'PG',
-                    production: true,
-                  },
-                ],
+                databases: args.databases.map((database) => ({
+                  name: database.name,
+                  clusterName: database.clusterName,
+                  engine: database.engine,
+                  production: true,
+                  ...(database.dbName ? { dbName: database.dbName } : {}),
+                  ...(database.dbUser ? { dbUser: database.dbUser } : {}),
+                })),
               }
             : {}),
         },
@@ -163,7 +186,12 @@ export class AppPlatformApp extends pulumi.ComponentResource {
         ? { healthCheck: { httpPath: service.healthCheckPath } }
         : {}),
       ...(service.routes.length > 0 ? { routes: service.routes } : {}),
-      envs: this.buildServiceEnvs(service.variables, projectName, environmentName),
+      envs: this.buildServiceEnvs(
+        service.variables,
+        service.bindings ?? [],
+        projectName,
+        environmentName,
+      ),
     };
   }
 
@@ -188,19 +216,29 @@ export class AppPlatformApp extends pulumi.ComponentResource {
 
   private buildServiceEnvs(
     variables: AppPlatformVariable[],
+    bindings: AppPlatformBindingEnv[],
     projectName: string,
     environmentName: string,
   ): digitalocean.types.input.AppSpecServiceEnv[] {
-    // Liftoff-managed metadata vars — auto-injected so apps can self-identify in
-    // logs/error reporting without hard-coding. User-defined variables of the
-    // same name (rare) override these because the resolver de-dupes on key.
-    const liftoffMeta = new Map<string, digitalocean.types.input.AppSpecServiceEnv>([
+    // Precedence (lowest -> highest): Liftoff metadata < edge bindings < user vault
+    // vars. A Map keyed by env name means later sets win, so a user-set DATABASE_URL
+    // overrides the binding-injected one.
+    const envByKey = new Map<string, digitalocean.types.input.AppSpecServiceEnv>([
       ['LIFTOFF_PROJECT', { key: 'LIFTOFF_PROJECT', value: projectName, scope: 'RUN_TIME', type: 'GENERAL' }],
       ['LIFTOFF_ENVIRONMENT', { key: 'LIFTOFF_ENVIRONMENT', value: environmentName, scope: 'RUN_TIME', type: 'GENERAL' }],
     ]);
 
+    for (const binding of bindings) {
+      envByKey.set(binding.key, {
+        key: binding.key,
+        value: binding.value,
+        scope: 'RUN_TIME',
+        type: binding.secret ? 'SECRET' : 'GENERAL',
+      });
+    }
+
     for (const variable of variables) {
-      liftoffMeta.set(variable.key, {
+      envByKey.set(variable.key, {
         key: variable.key,
         value: variable.value,
         scope: 'RUN_TIME',
@@ -208,6 +246,6 @@ export class AppPlatformApp extends pulumi.ComponentResource {
       });
     }
 
-    return Array.from(liftoffMeta.values());
+    return Array.from(envByKey.values());
   }
 }
