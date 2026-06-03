@@ -32,13 +32,18 @@ export interface AppPlatformBindingEnv {
 }
 
 /**
- * One App Platform component within the env's single DO `App`. Phase 1 ships
- * `kind: 'service'`; workers/jobs/static_sites are reserved for Phase 5.
+ * One App Platform component within the env's single DO `App`.
+ *   - `service`     → `services[]`     (HTTP, public route)
+ *   - `worker`      → `workers[]`      (background, no port/route)
+ *   - `job`         → `jobs[]`         (deploy-lifecycle hook; see `jobKind`)
+ *   - `static_site` → `services[]`     (served as a lightweight container — DO's
+ *     native `static_sites[]` only accepts a git source, not a DOCR image, so an
+ *     image-built static site is deployed as a container service)
  */
 export interface AppPlatformServiceSpec {
   /** Unique within the env's App spec; becomes the App Platform component name. */
   name: string;
-  /** Component type. Phase 1: must be 'service'. */
+  /** Component type — dispatched to the matching App spec array (see interface doc). */
   kind: 'service' | 'worker' | 'job' | 'static_site';
   /** Fully-qualified DOCR image URI to deploy. */
   imageUri: string;
@@ -67,6 +72,15 @@ export interface AppPlatformServiceSpec {
    * no default start (e.g. a Node repo with no `start` script).
    */
   command?: string;
+  /**
+   * JOB only: when the job runs in the deploy lifecycle. App Platform supports
+   * PRE_DEPLOY / POST_DEPLOY / FAILED_DEPLOY. `cron` has no native App Platform
+   * scheduler — it's treated as POST_DEPLOY here and carried in liftoff.yml for
+   * export; true scheduled execution would need a worker-based scheduler.
+   */
+  jobKind?: 'cron' | 'pre_deploy' | 'post_deploy' | 'failed_deploy';
+  /** JOB only: cron expression (export/record only; not an App Platform primitive). */
+  schedule?: string;
 }
 
 /**
@@ -120,16 +134,23 @@ export class AppPlatformApp extends pulumi.ComponentResource {
     const tags = createLiftoffTags(args.projectName, args.environmentName);
     const appName = truncateKebabCase(toKebabCase(args.appName), 32);
 
-    // Partition components by kind: HTTP services (and, for now, jobs/static
-    // sites which degrade to services) go in services[]; background workers go
-    // in workers[] (no port/routes/healthcheck).
+    // Partition components by kind into the matching App spec arrays. Background
+    // workers → workers[]; deploy-lifecycle jobs → jobs[]; HTTP services and
+    // image-built static sites → services[] (DO static_sites[] need a git source,
+    // not a DOCR image, so an image-built static site runs as a container service).
     const workerSpecs = args.services.filter((service) => service.kind === 'worker');
-    const serviceSpecs = args.services.filter((service) => service.kind !== 'worker');
+    const jobSpecs = args.services.filter((service) => service.kind === 'job');
+    const serviceSpecs = args.services.filter(
+      (service) => service.kind !== 'worker' && service.kind !== 'job',
+    );
     const serviceEntries = serviceSpecs.map((service) =>
       this.toServiceSpec(service, args.projectName, args.environmentName),
     );
     const workerEntries = workerSpecs.map((service) =>
       this.toWorkerSpec(service, args.projectName, args.environmentName),
+    );
+    const jobEntries = jobSpecs.map((service) =>
+      this.toJobSpec(service, args.projectName, args.environmentName),
     );
 
     const app = new digitalocean.App(
@@ -140,6 +161,7 @@ export class AppPlatformApp extends pulumi.ComponentResource {
           region: args.region,
           ...(serviceEntries.length > 0 ? { services: serviceEntries } : {}),
           ...(workerEntries.length > 0 ? { workers: workerEntries } : {}),
+          ...(jobEntries.length > 0 ? { jobs: jobEntries } : {}),
           ...(args.databases && args.databases.length > 0
             ? {
                 databases: args.databases.map((database) => ({
@@ -244,6 +266,59 @@ export class AppPlatformApp extends pulumi.ComponentResource {
         environmentName,
       ),
     };
+  }
+
+  /**
+   * Maps a job-kind spec to an App Platform `jobs[]` entry — a run-to-completion
+   * task tied to the deploy lifecycle. App Platform job `kind` is one of
+   * PRE_DEPLOY / POST_DEPLOY / FAILED_DEPLOY (there is no native cron); a Liftoff
+   * `cron` jobKind degrades to POST_DEPLOY.
+   */
+  private toJobSpec(
+    service: AppPlatformServiceSpec,
+    projectName: string,
+    environmentName: string,
+  ): digitalocean.types.input.AppSpecJob {
+    const parsedImage = this.parseDocrImageUri(service.imageUri);
+    const componentName = truncateKebabCase(
+      toKebabCase(`${service.name}-${environmentName}`),
+      32,
+    );
+
+    return {
+      name: componentName,
+      kind: this.mapJobKind(service.jobKind),
+      image: {
+        registry: parsedImage.registry,
+        registryType: 'DOCR',
+        repository: parsedImage.repository,
+        tag: parsedImage.tag,
+      },
+      instanceCount: service.instanceCount,
+      instanceSizeSlug: service.instanceSizeSlug,
+      ...(service.command ? { runCommand: service.command } : {}),
+      envs: this.buildServiceEnvs(
+        service.variables,
+        service.bindings ?? [],
+        projectName,
+        environmentName,
+      ),
+    };
+  }
+
+  /** Maps a Liftoff jobKind to App Platform's job `kind` enum. */
+  private mapJobKind(jobKind: AppPlatformServiceSpec['jobKind']): string {
+    switch (jobKind) {
+      case 'pre_deploy':
+        return 'PRE_DEPLOY';
+      case 'failed_deploy':
+        return 'FAILED_DEPLOY';
+      // App Platform has no native cron scheduler — a cron job runs post-deploy.
+      case 'cron':
+      case 'post_deploy':
+      default:
+        return 'POST_DEPLOY';
+    }
   }
 
   private parseDocrImageUri(imageUri: string): DocrImageReference {

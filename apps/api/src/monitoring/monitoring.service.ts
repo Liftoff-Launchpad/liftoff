@@ -127,7 +127,7 @@ export class MonitoringService {
   public async getMetrics(
     environmentId: string,
     userId: string,
-    metricType: 'cpu' | 'memory' | 'bandwidth',
+    metricType: 'cpu' | 'memory' | 'bandwidth' | 'restart',
     serviceName?: string,
     rangeHours = 1,
   ): Promise<MetricDatapoint[]> {
@@ -338,7 +338,9 @@ export class MonitoringService {
     }
   }
 
-  private mapMetricType(type: 'cpu' | 'memory' | 'bandwidth'): 'cpu_percentage' | 'memory_percentage' | 'network_bandwidth' {
+  private mapMetricType(
+    type: 'cpu' | 'memory' | 'bandwidth' | 'restart',
+  ): 'cpu_percentage' | 'memory_percentage' | 'network_bandwidth' | 'restart_count' {
     switch (type) {
       case 'cpu':
         return 'cpu_percentage';
@@ -346,6 +348,8 @@ export class MonitoringService {
         return 'memory_percentage';
       case 'bandwidth':
         return 'network_bandwidth';
+      case 'restart':
+        return 'restart_count';
     }
   }
 

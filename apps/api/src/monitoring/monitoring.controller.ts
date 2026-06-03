@@ -94,6 +94,26 @@ export class MonitoringController {
       rangeToHours(range),
     );
   }
+
+  /**
+   * Fetches restart-count metrics — how many times the container restarted in
+   * the window. A climbing restart count is the canonical crash-loop signal.
+   */
+  @Get('metrics/restart-count')
+  public getRestartCountMetrics(
+    @Param('environmentId') environmentId: string,
+    @CurrentUser() user?: User,
+    @Query('service') service?: string,
+    @Query('range') range?: string,
+  ) {
+    return this.monitoringService.getMetrics(
+      environmentId,
+      user?.id ?? '',
+      'restart',
+      service?.trim() || undefined,
+      rangeToHours(range),
+    );
+  }
 }
 
 /** Maps a UI range token to a window size in hours. */

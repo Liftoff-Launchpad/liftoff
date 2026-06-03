@@ -43,9 +43,13 @@ export class ServicesService {
       where: { environmentId, deletedAt: null },
     });
     const kind = (dto.kind ?? 'SERVICE') as ServiceKind;
-    // Workers / jobs are non-HTTP — they never get a public route.
-    const resolvedRoutePath =
-      kind === 'SERVICE' ? this.resolveRoutePath(dto, existingServiceCount, dto.name) : null;
+    // Only HTTP-serving components get a public route. Workers (background) and
+    // jobs (deploy hooks) are non-HTTP; web services and static sites are served
+    // over HTTP and need a route.
+    const isHttp = kind === 'SERVICE' || kind === 'STATIC_SITE';
+    const resolvedRoutePath = isHttp
+      ? this.resolveRoutePath(dto, existingServiceCount, dto.name)
+      : null;
     const resolvedRepositoryId = environment.project.repository?.id ?? null;
 
     let created: Service;
@@ -65,6 +69,8 @@ export class ServicesService {
           routePath: resolvedRoutePath,
           healthcheckPath: dto.healthcheckPath ?? null,
           command: dto.command ?? null,
+          jobKind: kind === 'JOB' ? dto.jobKind ?? null : null,
+          jobSchedule: kind === 'JOB' ? dto.jobSchedule ?? null : null,
           canvasPosition: dto.canvasPosition
             ? (dto.canvasPosition as unknown as Prisma.InputJsonValue)
             : Prisma.JsonNull,
@@ -137,6 +143,8 @@ export class ServicesService {
     if (dto.routePath !== undefined) updateData.routePath = dto.routePath;
     if (dto.healthcheckPath !== undefined) updateData.healthcheckPath = dto.healthcheckPath;
     if (dto.command !== undefined) updateData.command = dto.command;
+    if (dto.jobKind !== undefined) updateData.jobKind = dto.jobKind;
+    if (dto.jobSchedule !== undefined) updateData.jobSchedule = dto.jobSchedule;
     if (dto.canvasPosition !== undefined) {
       updateData.canvasPosition = dto.canvasPosition as unknown as Prisma.InputJsonValue;
     }

@@ -16,7 +16,7 @@ import { CurrentUser } from '../common/decorators';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { CreateConnectionDto } from './dto/create-connection.dto';
 import { UpdateConnectionDto } from './dto/update-connection.dto';
-import { ConnectionsService } from './connections.service';
+import { ConnectionsService, type ConnectionPreview } from './connections.service';
 
 /**
  * Environment-scoped endpoints for listing and creating graph edges.
@@ -55,6 +55,14 @@ export class EnvironmentConnectionsController {
 @ApiTags('Connections')
 export class ConnectionsController {
   public constructor(private readonly connectionsService: ConnectionsService) {}
+
+  @Get(':id/preview')
+  public preview(
+    @Param('id') id: string,
+    @CurrentUser() user: User,
+  ): Promise<ConnectionPreview> {
+    return this.connectionsService.preview(id, user.id);
+  }
 
   @Patch(':id')
   public update(

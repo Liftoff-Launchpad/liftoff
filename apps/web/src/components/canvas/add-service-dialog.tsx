@@ -34,13 +34,15 @@ const instanceSizeOptions = [
   'apps-s-4vcpu-8gb',
 ] as const;
 
+const jobKindOptions = ['post_deploy', 'pre_deploy', 'failed_deploy', 'cron'] as const;
+
 const schema = z.object({
   name: z
     .string()
     .min(2)
     .max(40)
     .regex(/^[a-z0-9][a-z0-9-]*$/, 'Lowercase letters, numbers, hyphens only'),
-  kind: z.enum(['SERVICE', 'WORKER']).default('SERVICE'),
+  kind: z.enum(['SERVICE', 'WORKER', 'JOB', 'STATIC_SITE']).default('SERVICE'),
   sourceDir: z.string().min(1).default('.'),
   buildStrategy: z.enum(buildStrategyOptions).default('AUTO'),
   dockerfilePath: z.string().min(1).default('Dockerfile'),
@@ -50,9 +52,16 @@ const schema = z.object({
   routePath: z.string().default(''),
   healthcheckPath: z.string().default(''),
   command: z.string().default(''),
+  jobKind: z.enum(jobKindOptions).default('post_deploy'),
+  jobSchedule: z.string().default(''),
 });
 
 type FormValues = z.input<typeof schema>;
+
+/** Web services and static sites are served over HTTP and get a route + healthcheck. */
+function isHttpKind(kind: FormValues['kind']): boolean {
+  return kind === 'SERVICE' || kind === 'STATIC_SITE';
+}
 
 interface AddServiceDialogProps {
   open: boolean;
@@ -87,6 +96,8 @@ export function AddServiceDialog({
       routePath: '',
       healthcheckPath: '',
       command: '',
+      jobKind: 'post_deploy',
+      jobSchedule: '',
     },
   });
 
@@ -102,12 +113,18 @@ export function AddServiceDialog({
         port: values.port,
         instanceSize: values.instanceSize,
         replicas: values.replicas,
-        // Routes/healthcheck are HTTP-only — workers don't get them.
-        ...(values.kind === 'SERVICE' && values.routePath ? { routePath: values.routePath } : {}),
-        ...(values.kind === 'SERVICE' && values.healthcheckPath
+        // Routes/healthcheck are HTTP-only — web services and static sites get
+        // them; workers and jobs don't.
+        ...(isHttpKind(values.kind) && values.routePath ? { routePath: values.routePath } : {}),
+        ...(isHttpKind(values.kind) && values.healthcheckPath
           ? { healthcheckPath: values.healthcheckPath }
           : {}),
         ...(values.command ? { command: values.command } : {}),
+        // Job lifecycle fields only apply to JOB components.
+        ...(values.kind === 'JOB' ? { jobKind: values.jobKind } : {}),
+        ...(values.kind === 'JOB' && values.jobSchedule
+          ? { jobSchedule: values.jobSchedule }
+          : {}),
       });
       toast({
         title: 'Service added',
@@ -163,6 +180,8 @@ export function AddServiceDialog({
                 <SelectContent>
                   <SelectItem value="SERVICE">Web service (HTTP, public route)</SelectItem>
                   <SelectItem value="WORKER">Worker (background, no route)</SelectItem>
+                  <SelectItem value="JOB">Job (deploy hook / task)</SelectItem>
+                  <SelectItem value="STATIC_SITE">Static site (served as container)</SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -237,7 +256,7 @@ export function AddServiceDialog({
               </Select>
             </div>
 
-            {form.watch('kind') === 'SERVICE' && (
+            {isHttpKind(form.watch('kind')) && (
               <>
                 <div className="space-y-1">
                   <Label htmlFor="svc-route">Route path</Label>
@@ -253,6 +272,45 @@ export function AddServiceDialog({
                     {...form.register('healthcheckPath')}
                   />
                   <p className="text-xs text-muted-foreground">Empty = TCP probe</p>
+                </div>
+              </>
+            )}
+
+            {form.watch('kind') === 'JOB' && (
+              <>
+                <div className="space-y-1">
+                  <Label>Job runs</Label>
+                  <Select
+                    value={form.watch('jobKind')}
+                    onValueChange={(value) =>
+                      form.setValue('jobKind', value as FormValues['jobKind'], {
+                        shouldValidate: true,
+                      })
+                    }
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="post_deploy">After each deploy (post-deploy)</SelectItem>
+                      <SelectItem value="pre_deploy">Before each deploy (pre-deploy)</SelectItem>
+                      <SelectItem value="failed_deploy">On failed deploy</SelectItem>
+                      <SelectItem value="cron">On a schedule (best-effort)</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div className="space-y-1">
+                  <Label htmlFor="svc-schedule">Schedule (cron)</Label>
+                  <Input
+                    id="svc-schedule"
+                    placeholder="0 3 * * *"
+                    disabled={form.watch('jobKind') !== 'cron'}
+                    {...form.register('jobSchedule')}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    App Platform has no native cron; recorded for export.
+                  </p>
                 </div>
               </>
             )}

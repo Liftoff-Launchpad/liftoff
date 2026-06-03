@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { AlertTriangle, Code2, GitBranch, Globe, Network, Plus, Rocket, Search, Trash2, Zap } from 'lucide-react';
+import { AlertTriangle, Code2, GitBranch, Globe, Network, Plus, Rocket, Search, Trash2, Wand2, Zap } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
   Dialog,
@@ -25,7 +25,22 @@ import { TabsContent } from '@/components/ui/tabs';
 import { toast } from '@/components/ui/use-toast';
 import { useRedeployEnvironment, useTriggerBuild } from '@/hooks/queries/use-environments';
 import { useDeleteService, useUpdateService } from '@/hooks/queries/use-services';
+import { useLatestServiceDeployment } from '@/hooks/queries/use-deployments';
 import { useStagedChangesStore } from '../staged-changes/staged-changes-store';
+
+/**
+ * Pulls the Nixpacks-detected start command out of a stored build plan
+ * (`nixpacks plan --format json`). Returns null when there's no plan or no
+ * detected command — Nixpacks plans carry `start.cmd` but no port, so this is
+ * the one reliably-detectable smart default.
+ */
+function extractDetectedStartCommand(buildPlan: unknown): string | null {
+  if (!buildPlan || typeof buildPlan !== 'object') return null;
+  const start = (buildPlan as { start?: unknown }).start;
+  if (!start || typeof start !== 'object') return null;
+  const cmd = (start as { cmd?: unknown }).cmd;
+  return typeof cmd === 'string' && cmd.trim().length > 0 ? cmd.trim() : null;
+}
 
 interface DrawerSettingsTabProps {
   /** Service.id selected on the canvas. */
@@ -78,6 +93,15 @@ export function DrawerSettingsTab({
   const deleteService = useDeleteService(environmentId, projectId);
   const updateService = useUpdateService(nodeId, environmentId, projectId);
   const addChange = useStagedChangesStore((s) => s.addChange);
+
+  // Surface the start command Nixpacks detected on the last build as a one-click
+  // smart default — only when the user hasn't already set/typed one.
+  const latestDeploy = useLatestServiceDeployment(environmentId, nodeName, {
+    refetchIntervalMs: false,
+  });
+  const detectedCommand = extractDetectedStartCommand(latestDeploy.data?.deployment?.buildPlan);
+  const showDetectedCommandHint =
+    Boolean(detectedCommand) && commandDraft.trim().length === 0;
 
   const handleSaveCommand = async () => {
     try {
@@ -267,6 +291,25 @@ export function DrawerSettingsTab({
                     Save
                   </Button>
                 </div>
+
+                {showDetectedCommandHint && detectedCommand && (
+                  <div className="flex items-start gap-2 rounded-lg border border-primary/30 bg-primary/5 px-3 py-2 text-xs">
+                    <Wand2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-primary" />
+                    <div className="min-w-0 flex-1">
+                      <p>
+                        Nixpacks detected a start command on the last build:{' '}
+                        <code className="break-all font-mono text-foreground">{detectedCommand}</code>
+                      </p>
+                      <Button
+                        variant="link"
+                        className="h-auto p-0 text-xs text-primary"
+                        onClick={() => setCommandDraft(detectedCommand)}
+                      >
+                        Use it
+                      </Button>
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           </section>

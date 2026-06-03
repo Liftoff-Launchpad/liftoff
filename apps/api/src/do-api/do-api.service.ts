@@ -374,7 +374,7 @@ export class DoApiService {
   public async getAppMetrics(
     doToken: string,
     appId: string,
-    metricType: 'cpu_percentage' | 'memory_percentage' | 'network_bandwidth',
+    metricType: 'cpu_percentage' | 'memory_percentage' | 'network_bandwidth' | 'restart_count',
     doAccountId?: string,
     componentName?: string,
     startUnix?: number,

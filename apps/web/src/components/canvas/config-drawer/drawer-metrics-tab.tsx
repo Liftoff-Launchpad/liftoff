@@ -27,7 +27,7 @@ interface DrawerMetricsTabProps {
   serviceName?: string;
 }
 
-type MetricType = 'cpu' | 'memory' | 'bandwidth';
+type MetricType = 'cpu' | 'memory' | 'bandwidth' | 'restart-count';
 type Range = '1h' | '6h' | '1d' | '7d' | '30d';
 
 const RANGES: Range[] = ['1h', '6h', '1d', '7d', '30d'];
@@ -44,17 +44,20 @@ export function DrawerMetricsTab({ environmentId, serviceName }: DrawerMetricsTa
   const cpuQuery = useMetricQuery(environmentId, 'cpu', serviceName, range, isPageVisible);
   const memoryQuery = useMetricQuery(environmentId, 'memory', serviceName, range, isPageVisible);
   const networkQuery = useMetricQuery(environmentId, 'bandwidth', serviceName, range, isPageVisible);
+  const restartQuery = useMetricQuery(environmentId, 'restart-count', serviceName, range, isPageVisible);
 
   const isInitialLoading =
-    (cpuQuery.isLoading || memoryQuery.isLoading || networkQuery.isLoading) &&
+    (cpuQuery.isLoading || memoryQuery.isLoading || networkQuery.isLoading || restartQuery.isLoading) &&
     !cpuQuery.data &&
     !memoryQuery.data &&
-    !networkQuery.data;
+    !networkQuery.data &&
+    !restartQuery.data;
 
   const hasAnyData =
     (cpuQuery.data?.length ?? 0) +
       (memoryQuery.data?.length ?? 0) +
-      (networkQuery.data?.length ?? 0) >
+      (networkQuery.data?.length ?? 0) +
+      (restartQuery.data?.length ?? 0) >
     0;
 
   if (isInitialLoading) {
@@ -117,6 +120,13 @@ export function DrawerMetricsTab({ environmentId, serviceName }: DrawerMetricsTa
             unit=" MB/s"
             color="#10b981"
           />
+          <MetricChart
+            label="Restarts"
+            data={restartQuery.data ?? []}
+            max="auto"
+            unit=""
+            color="#f59e0b"
+          />
         </div>
       )}
     </TabsContent>
@@ -172,7 +182,8 @@ function MetricChart({
 }: {
   label: string;
   data: MetricDatapoint[];
-  max: number;
+  /** Fixed upper bound for percentage metrics, or 'auto' for counts (restarts). */
+  max: number | 'auto';
   unit: string;
   color: string;
 }) {
@@ -215,6 +226,7 @@ function MetricChart({
               />
               <YAxis
                 domain={[0, max]}
+                allowDecimals={max !== 'auto'}
                 tick={{ fontSize: 10, fill: 'hsl(var(--muted-foreground))' }}
                 tickLine={false}
                 axisLine={false}

@@ -315,6 +315,8 @@ function toServiceSpec(
     bindings,
     healthCheckPath: service.healthcheck?.path,
     command: service.command,
+    jobKind: service.jobKind,
+    schedule: service.schedule,
   };
 }
 

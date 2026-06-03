@@ -26,9 +26,12 @@ export interface ServiceRecord {
   deletedAt: string | null;
 }
 
+export type ServiceKind = 'SERVICE' | 'WORKER' | 'JOB' | 'STATIC_SITE';
+export type JobKind = 'cron' | 'pre_deploy' | 'post_deploy' | 'failed_deploy';
+
 export interface CreateServiceInput {
   name: string;
-  kind?: 'SERVICE' | 'WORKER';
+  kind?: ServiceKind;
   sourceDir?: string;
   buildStrategy?: 'AUTO' | 'DOCKERFILE' | 'NIXPACKS';
   dockerfilePath?: string;
@@ -39,6 +42,10 @@ export interface CreateServiceInput {
   healthcheckPath?: string;
   /** Start command — set when the image has no detectable start (e.g. Node, no `start` script). */
   command?: string | null;
+  /** JOB only — when in the deploy lifecycle the job runs. */
+  jobKind?: JobKind | null;
+  /** JOB only — cron expression (recorded; App Platform has no native scheduler). */
+  jobSchedule?: string | null;
 }
 
 export interface UpdateServiceInput {
