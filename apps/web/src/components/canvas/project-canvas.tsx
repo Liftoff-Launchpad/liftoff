@@ -28,6 +28,7 @@ import { CanvasEmptyState } from './canvas-empty-state';
 import { ServiceNode } from './service-node';
 import { DatabaseNode } from './database-node';
 import { CanvasToolbar } from './canvas-toolbar';
+import { CanvasActivity } from './canvas-activity';
 import { ConfigDrawer } from './config-drawer/config-drawer';
 import { ResourceDrawer } from './config-drawer/resource-drawer';
 import { DrawerLogsTab } from './config-drawer/drawer-logs-tab';
@@ -456,22 +457,21 @@ export function ProjectCanvas({ projectId }: ProjectCanvasProps) {
       )}
 
       {activityOpen && (
-        <aside className="liftoff-panel absolute bottom-4 right-4 top-20 z-20 w-[min(460px,calc(100vw-112px))] rounded-lg p-6">
+        <aside className="liftoff-panel absolute bottom-4 right-4 top-20 z-20 w-[min(460px,calc(100vw-112px))] animate-in fade-in slide-in-from-right-4 rounded-lg p-6 duration-300">
           <h2 className="text-xl font-semibold">Activity</h2>
-          <div className="mt-8 rounded-lg border border-border bg-secondary/40 p-5">
-            <div className="flex items-center gap-3">
-              <span className="h-2 w-2 rounded-full bg-primary" />
-              <div>
-                <p className="font-medium">Canvas ready</p>
-                <p className="mt-1 text-sm text-muted-foreground">Use Add to stage services, databases, buckets, or future endpoints.</p>
-              </div>
-            </div>
+          <p className="mt-1 text-xs text-muted-foreground">Recent deployments in this environment.</p>
+          <div className="mt-2 max-h-[calc(100%-4rem)] overflow-y-auto">
+            {activeEnvironmentId ? (
+              <CanvasActivity environmentId={activeEnvironmentId} />
+            ) : (
+              <p className="mt-8 text-sm text-muted-foreground">No environment yet.</p>
+            )}
           </div>
         </aside>
       )}
 
       {logsPanelOpen && activeEnvironmentId && (
-        <aside className="liftoff-panel absolute bottom-4 right-4 top-20 z-20 flex w-[min(720px,calc(100vw-112px))] flex-col overflow-hidden rounded-lg p-5">
+        <aside className="liftoff-panel absolute bottom-4 right-4 top-20 z-20 flex w-[min(720px,calc(100vw-112px))] flex-col overflow-hidden rounded-lg p-5 animate-in fade-in slide-in-from-right-4 duration-300">
           <div className="mb-4 flex items-center justify-between">
             <div>
               <h2 className="text-xl font-semibold">Environment logs</h2>
@@ -509,10 +509,14 @@ export function ProjectCanvas({ projectId }: ProjectCanvasProps) {
                 repoName={String(selectedNode?.data?.repoName ?? selectedNodeData?.data.label ?? '')}
                 region={String(selectedNode?.data?.region ?? selectedNodeData?.data?.region ?? '')}
                 replicas={Number(selectedNode?.data?.replicas ?? 1)}
+                environmentId={String(selectedNode?.data?.environmentId ?? '') || undefined}
               >
                 {selectedNode && !isResourceNode && (
                   <>
-                    <DrawerMetricsTab environmentId={String(selectedNode.data?.environmentId ?? '')} />
+                    <DrawerMetricsTab
+                      environmentId={String(selectedNode.data?.environmentId ?? '')}
+                      serviceName={String(selectedNode.data?.serviceName ?? '') || undefined}
+                    />
                     <DrawerVariablesTab
                       serviceId={selectedNode.id}
                       environmentId={String(selectedNode.data?.environmentId ?? '')}
@@ -552,6 +556,7 @@ export function ProjectCanvas({ projectId }: ProjectCanvasProps) {
                   selectedNode?.data?.bucketName ? String(selectedNode.data.bucketName) : undefined
                 }
                 outputs={selectedNode?.data?.outputs as Record<string, string> | undefined}
+                config={selectedNode?.data?.resourceConfig as Record<string, unknown> | undefined}
                 onDeleted={() => setSelectedNode(null)}
               />
 

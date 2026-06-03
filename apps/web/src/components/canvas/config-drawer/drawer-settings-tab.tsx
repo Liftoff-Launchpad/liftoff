@@ -161,18 +161,33 @@ export function DrawerSettingsTab({
     setCurrentSize(size);
     setCurrentReplicas(repl);
     onChangeScaling?.(size, repl);
-    addChange({
-      nodeId,
-      type: 'CHANGE_SCALING',
-      label: `Change scaling to ${size} x${repl}`,
-      payload: { instanceSize: size, replicas: repl },
-    });
+  };
+
+  const scalingDirty = currentSize !== instanceSize || currentReplicas !== replicas;
+
+  const handleSaveScaling = async () => {
+    try {
+      await updateService.mutateAsync({ instanceSize: currentSize, replicas: currentReplicas });
+      toast({
+        title: 'Scaling saved',
+        description: 'Hit Deploy on the canvas to roll the new size/replicas out.',
+      });
+    } catch {
+      toast({ title: 'Could not save scaling', variant: 'destructive' });
+    }
   };
 
   const handleAddDomain = () => {
     if (!newDomain.trim()) return;
-    onAddDomain?.(newDomain.trim());
-    setNewDomain('');
+    if (onAddDomain) {
+      onAddDomain(newDomain.trim());
+      setNewDomain('');
+      return;
+    }
+    toast({
+      title: 'Custom domains coming soon',
+      description: 'Domain management isn’t wired up yet.',
+    });
   };
 
   return (
@@ -204,7 +219,6 @@ export function DrawerSettingsTab({
                     <Rocket className="h-4 w-4 shrink-0 text-foreground" />
                     <span className="truncate font-medium">Connected GitHub repository</span>
                   </div>
-                  <Button variant="outline" size="sm">Disconnect</Button>
                 </div>
               </div>
 
@@ -219,30 +233,14 @@ export function DrawerSettingsTab({
                       <GitBranch className="h-4 w-4" />
                       main
                     </span>
-                    <Button variant="outline" size="sm">Disconnect</Button>
                   </div>
                   <div className="flex items-center justify-between border-t border-border bg-background/30 px-4 py-3 text-sm">
                     <span className="inline-flex items-center gap-3">
                       <Zap className="h-4 w-4 text-primary" />
                       Auto deploys when pushed to GitHub
                     </span>
-                    <Button variant="outline" size="sm">Disable</Button>
                   </div>
                 </div>
-              </div>
-
-              <div className="space-y-3">
-                <Label className="text-sm font-semibold">Wait for CI</Label>
-                <p className="text-sm text-muted-foreground">Trigger deployments after all GitHub Actions complete successfully.</p>
-                <button
-                  type="button"
-                  className="flex h-12 w-full items-center rounded-lg border border-border bg-secondary/50 px-4 text-left"
-                >
-                  <span className="mr-4 h-6 w-10 rounded-full bg-muted p-0.5">
-                    <span className="block h-5 w-5 rounded-full bg-foreground" />
-                  </span>
-                  Wait for CI
-                </button>
               </div>
 
               <div className="space-y-3">
@@ -354,6 +352,19 @@ export function DrawerSettingsTab({
                   </Select>
                 </div>
               </div>
+              <div className="flex items-center gap-3">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void handleSaveScaling()}
+                  disabled={!scalingDirty || updateService.isPending}
+                >
+                  Save scaling
+                </Button>
+                <p className="text-xs text-muted-foreground">
+                  Applies on the next Deploy — the App is resized in place (no rebuild).
+                </p>
+              </div>
             </div>
           </section>
 
@@ -422,10 +433,6 @@ export function DrawerSettingsTab({
           <a href="#source" className="block text-foreground">Source</a>
           <a href="#networking" className="block hover:text-foreground">Networking</a>
           <a href="#scale" className="block hover:text-foreground">Scale</a>
-          <span className="block">Build</span>
-          <span className="block">Deploy</span>
-          <span className="block">Config-as-code</span>
-          <span className="block">Feature-flags</span>
           <a href="#danger" className="block hover:text-foreground">Danger</a>
         </nav>
       </div>

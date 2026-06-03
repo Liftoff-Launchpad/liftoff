@@ -28,6 +28,7 @@ export interface ServiceRecord {
 
 export interface CreateServiceInput {
   name: string;
+  kind?: 'SERVICE' | 'WORKER';
   sourceDir?: string;
   buildStrategy?: 'AUTO' | 'DOCKERFILE' | 'NIXPACKS';
   dockerfilePath?: string;

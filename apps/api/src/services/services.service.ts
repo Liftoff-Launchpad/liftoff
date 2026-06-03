@@ -42,7 +42,10 @@ export class ServicesService {
     const existingServiceCount = await this.prismaService.service.count({
       where: { environmentId, deletedAt: null },
     });
-    const resolvedRoutePath = this.resolveRoutePath(dto, existingServiceCount, dto.name);
+    const kind = (dto.kind ?? 'SERVICE') as ServiceKind;
+    // Workers / jobs are non-HTTP — they never get a public route.
+    const resolvedRoutePath =
+      kind === 'SERVICE' ? this.resolveRoutePath(dto, existingServiceCount, dto.name) : null;
     const resolvedRepositoryId = environment.project.repository?.id ?? null;
 
     let created: Service;
@@ -52,7 +55,7 @@ export class ServicesService {
           environmentId,
           repositoryId: resolvedRepositoryId,
           name: dto.name,
-          kind: (dto.kind ?? 'SERVICE') as ServiceKind,
+          kind,
           sourceDir: dto.sourceDir ?? '.',
           buildStrategy: (dto.buildStrategy ?? 'AUTO') as BuildStrategy,
           dockerfilePath: dto.dockerfilePath ?? 'Dockerfile',

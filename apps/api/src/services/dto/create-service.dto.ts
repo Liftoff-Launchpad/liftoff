@@ -37,11 +37,11 @@ export class CreateServiceDto {
   })
   public name!: string;
 
-  @ApiPropertyOptional({ enum: ['SERVICE'], default: 'SERVICE' })
+  @ApiPropertyOptional({ enum: ['SERVICE', 'WORKER'], default: 'SERVICE' })
   @IsOptional()
   @IsString()
-  @IsIn(['SERVICE'])
-  public kind?: 'SERVICE';
+  @IsIn(['SERVICE', 'WORKER'])
+  public kind?: 'SERVICE' | 'WORKER';
 
   @ApiPropertyOptional({ example: './api', description: 'Path within the repo to build from.' })
   @IsOptional()

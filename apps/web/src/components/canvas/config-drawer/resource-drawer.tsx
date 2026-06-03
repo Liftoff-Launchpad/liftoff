@@ -1,10 +1,43 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Box, Database, HardDrive, Loader2, Trash2, X, Zap } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import { toast } from '@/components/ui/use-toast';
 import { cn } from '@/lib/utils';
-import { useDeleteResource, type ResourceKind } from '@/hooks/queries/use-resources';
+import {
+  useDeleteResource,
+  useUpdateResource,
+  type ResourceKind,
+} from '@/hooks/queries/use-resources';
+
+/** DO managed-database size slugs offered for Postgres/Redis clusters. */
+const DB_SIZE_OPTIONS = [
+  { value: 'db-s-1vcpu-1gb', label: '1 vCPU · 1 GB (starter)' },
+  { value: 'db-s-1vcpu-2gb', label: '1 vCPU · 2 GB' },
+  { value: 'db-s-2vcpu-4gb', label: '2 vCPU · 4 GB' },
+  { value: 'db-s-4vcpu-8gb', label: '4 vCPU · 8 GB' },
+];
+
+/** Engine versions DO offers per managed-database engine. */
+const VERSION_OPTIONS: Partial<Record<ResourceKind, string[]>> = {
+  POSTGRES: ['17', '16', '15', '14', '13'],
+  REDIS: ['7', '6'],
+};
+
+const DEFAULT_VERSION: Partial<Record<ResourceKind, string>> = {
+  POSTGRES: '15',
+  REDIS: '7',
+};
 
 interface ResourceDrawerProps {
   open: boolean;
@@ -18,6 +51,7 @@ interface ResourceDrawerProps {
   port?: number;
   bucketName?: string;
   outputs?: Record<string, string>;
+  config?: Record<string, unknown>;
   onDeleted: () => void;
 }
 
@@ -45,21 +79,67 @@ export function ResourceDrawer({
   port,
   bucketName,
   outputs,
+  config,
   onDeleted,
 }: ResourceDrawerProps) {
   const [confirming, setConfirming] = useState(false);
+  const [typedName, setTypedName] = useState('');
   const deleteResource = useDeleteResource(projectId);
+  const updateResource = useUpdateResource(projectId, resourceId);
   const meta = (kind && KIND_META[kind]) || { title: 'Resource', Icon: Box };
   const Icon = meta.Icon;
 
+  // Managed databases (Postgres/Redis) expose engine version + cluster size; buckets don't.
+  const isManagedDatabase = kind === 'POSTGRES' || kind === 'REDIS';
+  const configVersion = typeof config?.version === 'string' ? config.version : undefined;
+  const configSize = typeof config?.size === 'string' ? config.size : undefined;
+  const defaultVersion = (kind && DEFAULT_VERSION[kind]) ?? '';
+  const [versionDraft, setVersionDraft] = useState(configVersion ?? defaultVersion);
+  const [sizeDraft, setSizeDraft] = useState(configSize ?? 'db-s-1vcpu-1gb');
+
+  const versionOptions = (kind && VERSION_OPTIONS[kind]) ?? [];
+  const configDirty =
+    versionDraft !== (configVersion ?? defaultVersion) || sizeDraft !== (configSize ?? 'db-s-1vcpu-1gb');
+
+  // The drawer stays mounted across node selections — re-sync drafts when the
+  // selected resource (or its persisted config) changes.
+  useEffect(() => {
+    setVersionDraft(configVersion ?? defaultVersion);
+    setSizeDraft(configSize ?? 'db-s-1vcpu-1gb');
+    setTypedName('');
+    setConfirming(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resourceId, configVersion, configSize]);
+
+  const handleSaveConfig = () => {
+    updateResource.mutate(
+      { config: { ...(config ?? {}), version: versionDraft, size: sizeDraft } },
+      {
+        onSuccess: () =>
+          toast({
+            title: 'Configuration saved',
+            description: `${label} will provision as ${sizeDraft} on the next deploy.`,
+          }),
+      },
+    );
+  };
+
+  // A provisioned resource (anything past DRAFT) holds real cloud state — the next
+  // apply would DESTROY the live cluster + its data. Require typing the exact name
+  // to confirm. DRAFT resources never reached the cloud, so a simple two-click is fine.
+  const isProvisioned = status !== 'DRAFT';
+  const canDelete = !isProvisioned || typedName.trim() === label;
+
   const handleDelete = () => {
-    if (!confirming) {
+    if (!canDelete) return;
+    if (!isProvisioned && !confirming) {
       setConfirming(true);
       return;
     }
     deleteResource.mutate(resourceId, {
       onSuccess: () => {
         setConfirming(false);
+        setTypedName('');
         onDeleted();
       },
     });
@@ -140,27 +220,120 @@ export function ResourceDrawer({
           </section>
         )}
 
+        {isManagedDatabase && (
+          <section>
+            <h4 className="text-sm font-medium text-muted-foreground">Configuration</h4>
+            {isProvisioned ? (
+              <>
+                <dl className="mt-2 space-y-1.5">
+                  <div className="flex items-baseline gap-3 text-sm">
+                    <dt className="w-20 shrink-0 text-muted-foreground">Version</dt>
+                    <dd className="font-mono text-foreground">{configVersion ?? defaultVersion}</dd>
+                  </div>
+                  <div className="flex items-baseline gap-3 text-sm">
+                    <dt className="w-20 shrink-0 text-muted-foreground">Size</dt>
+                    <dd className="font-mono text-foreground">{configSize ?? 'db-s-1vcpu-1gb'}</dd>
+                  </div>
+                </dl>
+                <p className="mt-2 max-w-md text-xs text-muted-foreground">
+                  This cluster is live. Engine version and size can&apos;t be changed from the canvas
+                  after provisioning — resize it from the DigitalOcean control panel.
+                </p>
+              </>
+            ) : (
+              <div className="mt-2 grid grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <Label>Engine version</Label>
+                  <Select value={versionDraft} onValueChange={setVersionDraft}>
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {versionOptions.map((option) => (
+                        <SelectItem key={option} value={option}>
+                          {kind === 'POSTGRES' ? `PostgreSQL ${option}` : `Redis ${option}`}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-1">
+                  <Label>Cluster size</Label>
+                  <Select value={sizeDraft} onValueChange={setSizeDraft}>
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {DB_SIZE_OPTIONS.map((option) => (
+                        <SelectItem key={option.value} value={option.value}>
+                          {option.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="col-span-2">
+                  <Button
+                    size="sm"
+                    onClick={handleSaveConfig}
+                    disabled={!configDirty || updateResource.isPending}
+                    className="gap-1.5"
+                  >
+                    {updateResource.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                    Save configuration
+                  </Button>
+                </div>
+              </div>
+            )}
+          </section>
+        )}
+
         <section className="rounded-lg border border-red-500/30 bg-red-500/5 p-5">
           <h4 className="text-sm font-medium text-red-300">Danger zone</h4>
-          <p className="mt-1 text-xs text-muted-foreground">
-            Removes this resource node and any edges connected to it.
-          </p>
+          {isProvisioned ? (
+            <p className="mt-1 text-xs text-muted-foreground">
+              This resource is live. Deleting it will <strong className="text-red-300">destroy the
+              managed {meta.title.toLowerCase()} and all its data</strong> on the next deploy. Type{' '}
+              <code className="rounded bg-background/60 px-1 font-mono text-foreground">{label}</code>{' '}
+              to confirm.
+            </p>
+          ) : (
+            <p className="mt-1 text-xs text-muted-foreground">
+              Removes this draft resource node and any edges connected to it. Nothing is provisioned
+              yet, so no data is lost.
+            </p>
+          )}
+
+          {isProvisioned && (
+            <Input
+              value={typedName}
+              onChange={(event) => setTypedName(event.target.value)}
+              placeholder={label}
+              className="mt-3 font-mono"
+              autoComplete="off"
+            />
+          )}
+
           <div className="mt-3 flex items-center gap-2">
             <Button
               variant="outline"
               size="sm"
               onClick={handleDelete}
-              disabled={deleteResource.isPending}
-              className="gap-1.5 border-red-500/40 text-red-300 hover:bg-red-500/10 hover:text-red-200"
+              disabled={deleteResource.isPending || !canDelete}
+              className="gap-1.5 border-red-500/40 text-red-300 hover:bg-red-500/10 hover:text-red-200 disabled:opacity-40"
             >
               {deleteResource.isPending ? (
                 <Loader2 className="h-3.5 w-3.5 animate-spin" />
               ) : (
                 <Trash2 className="h-3.5 w-3.5" />
               )}
-              {confirming ? 'Click again to confirm' : 'Delete resource'}
+              {isProvisioned
+                ? 'Delete & destroy on deploy'
+                : confirming
+                  ? 'Click again to confirm'
+                  : 'Delete resource'}
             </Button>
-            {confirming && !deleteResource.isPending && (
+            {confirming && !isProvisioned && !deleteResource.isPending && (
               <Button variant="ghost" size="sm" onClick={() => setConfirming(false)}>
                 Cancel
               </Button>

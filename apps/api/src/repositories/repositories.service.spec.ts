@@ -47,6 +47,21 @@ describe('RepositoriesService', () => {
     environment: {
       findUnique: jest.fn(),
     },
+    service: {
+      findMany: jest.fn().mockResolvedValue([
+        {
+          id: 'svc-1',
+          name: 'my-app',
+          sourceDir: '.',
+          dockerfilePath: 'Dockerfile',
+          buildStrategy: 'AUTO',
+          command: null,
+        },
+      ]),
+    },
+    environmentVariable: {
+      findMany: jest.fn().mockResolvedValue([]),
+    },
     $transaction: jest.fn(),
   };
 
@@ -160,18 +175,25 @@ describe('RepositoriesService', () => {
       'https://liftoff.example.com/api/v1/webhooks/github',
       expect.any(String),
     );
-    expect(workflowGeneratorServiceMock.generate).toHaveBeenCalledWith({
-      projectName: 'my-app',
-      environmentId: 'env-1',
-      branch: 'main',
-      imageRepository: 'my-app/production',
-      liftoffApiUrl: 'https://liftoff.example.com',
-      buildStrategy: 'auto',
-      dockerfilePath: 'Dockerfile',
-      dockerBuildContext: '.',
-      doToken: 'decrypted-value',
-      doAccountId: 'do-1',
-    });
+    expect(workflowGeneratorServiceMock.generate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectName: 'my-app',
+        environmentId: 'env-1',
+        branch: 'main',
+        liftoffApiUrl: 'https://liftoff.example.com',
+        doToken: 'decrypted-value',
+        doAccountId: 'do-1',
+        services: [
+          expect.objectContaining({
+            name: 'my-app',
+            context: '.',
+            dockerfilePath: 'Dockerfile',
+            buildStrategy: 'auto',
+            imageRepository: 'my-app/production',
+          }),
+        ],
+      }),
+    );
     expect(githubServiceMock.commitFile).toHaveBeenCalledWith(
       'decrypted-value',
       'liftoff/my-app',
@@ -349,9 +371,19 @@ describe('RepositoriesService', () => {
     });
   });
 
-  it('connect uses build settings from environment liftoff config', async () => {
+  it('connect uses build settings from the environment service rows', async () => {
     projectsServiceMock.assertProjectRole.mockResolvedValue(Role.OWNER);
     prismaServiceMock.repository.findUnique.mockResolvedValue(null);
+    prismaServiceMock.service.findMany.mockResolvedValue([
+      {
+        id: 'svc-1',
+        name: 'my-app',
+        sourceDir: './apps/web',
+        dockerfilePath: './deploy/Dockerfile',
+        buildStrategy: 'AUTO',
+        command: null,
+      },
+    ]);
     prismaServiceMock.user.findFirst.mockResolvedValue({ githubToken: 'encrypted-github-token' });
     githubServiceMock.getRepository.mockResolvedValue({
       id: 123,
@@ -415,9 +447,13 @@ describe('RepositoriesService', () => {
 
     expect(workflowGeneratorServiceMock.generate).toHaveBeenCalledWith(
       expect.objectContaining({
-        buildStrategy: 'auto',
-        dockerfilePath: './deploy/Dockerfile',
-        dockerBuildContext: './apps/web',
+        services: [
+          expect.objectContaining({
+            buildStrategy: 'auto',
+            dockerfilePath: './deploy/Dockerfile',
+            context: './apps/web',
+          }),
+        ],
       }),
     );
   });
@@ -425,6 +461,16 @@ describe('RepositoriesService', () => {
   it('connect still passes Dockerfile defaults when strategy is nixpacks fallback', async () => {
     projectsServiceMock.assertProjectRole.mockResolvedValue(Role.OWNER);
     prismaServiceMock.repository.findUnique.mockResolvedValue(null);
+    prismaServiceMock.service.findMany.mockResolvedValue([
+      {
+        id: 'svc-1',
+        name: 'my-app',
+        sourceDir: '.',
+        dockerfilePath: 'Dockerfile',
+        buildStrategy: 'NIXPACKS',
+        command: null,
+      },
+    ]);
     prismaServiceMock.user.findFirst.mockResolvedValue({ githubToken: 'encrypted-github-token' });
     githubServiceMock.getRepository.mockResolvedValue({
       id: 123,
@@ -486,9 +532,13 @@ describe('RepositoriesService', () => {
 
     expect(workflowGeneratorServiceMock.generate).toHaveBeenCalledWith(
       expect.objectContaining({
-        buildStrategy: 'nixpacks',
-        dockerfilePath: 'Dockerfile',
-        dockerBuildContext: '.',
+        services: [
+          expect.objectContaining({
+            buildStrategy: 'nixpacks',
+            dockerfilePath: 'Dockerfile',
+            context: '.',
+          }),
+        ],
       }),
     );
   });

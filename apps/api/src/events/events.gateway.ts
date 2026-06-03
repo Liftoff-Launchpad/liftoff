@@ -113,7 +113,7 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
   @SubscribeMessage('start:log-stream')
   public async startLogStream(
     @ConnectedSocket() client: Socket,
-    @MessageBody() payload: { environmentId: string; serviceName?: string },
+    @MessageBody() payload: { environmentId: string; serviceName?: string; streamId?: string },
   ): Promise<void> {
     const userId = client.data.userId as string;
 
@@ -128,6 +128,7 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
         userId,
         client,
         payload.serviceName,
+        payload.streamId,
       );
     } catch (error) {
       this.logger.warn(
@@ -135,7 +136,21 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
           error instanceof Error ? error.message : 'Unknown error'
         }`,
       );
-      client.emit('error', { message: 'Failed to stream logs' });
+      client.emit('error', { message: 'Failed to stream logs', streamId: payload.streamId });
+    }
+  }
+
+  /**
+   * Ends a specific log stream (the viewer was closed/unmounted) so we stop
+   * polling DigitalOcean for it.
+   */
+  @SubscribeMessage('stop:log-stream')
+  public stopLogStream(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() payload: { streamId: string },
+  ): void {
+    if (payload?.streamId) {
+      this.monitoringService.stopLogStream(client, payload.streamId);
     }
   }
 

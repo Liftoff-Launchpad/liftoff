@@ -28,6 +28,7 @@ export interface CanvasNode {
     resourceId?: string;
     resourceKind?: 'POSTGRES' | 'REDIS' | 'SPACES_BUCKET';
     resourceStatus?: 'DRAFT' | 'PROVISIONING' | 'ACTIVE' | 'FAILED' | 'DESTROYING';
+    resourceConfig?: Record<string, unknown>;
     isStaged?: boolean;
   };
 }

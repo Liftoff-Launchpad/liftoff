@@ -14,6 +14,15 @@ export interface AppLogEntry {
   source: string;
 }
 
+/** A DO live-log async generator (only `.return()` is used to close it). */
+type LogGenerator = AsyncGenerator<string, void, unknown>;
+
+/** Per-socket data we attach for log-stream lifecycle management. */
+type SocketData = {
+  userId?: string;
+  logGenerators?: Map<string, LogGenerator>;
+};
+
 export interface MetricDatapoint {
   timestamp: number;
   value: number;
@@ -119,6 +128,8 @@ export class MonitoringService {
     environmentId: string,
     userId: string,
     metricType: 'cpu' | 'memory' | 'bandwidth',
+    serviceName?: string,
+    rangeHours = 1,
   ): Promise<MetricDatapoint[]> {
     const environment = await this.getEnvironmentWithAccess(environmentId, userId);
     const appContext = await this.getAppContext(environment);
@@ -129,8 +140,19 @@ export class MonitoringService {
 
     const doToken = this.decryptDoToken(environment.doAccount.doToken);
     const doMetricType = this.mapMetricType(metricType);
+    const componentName = await this.resolveAppComponentName(environmentId, serviceName);
+    const endUnix = Math.floor(Date.now() / 1000);
+    const startUnix = endUnix - Math.max(1, rangeHours) * 3600;
 
-    return this.doApiService.getAppMetrics(doToken, appContext.appId, doMetricType, environment.doAccountId);
+    return this.doApiService.getAppMetrics(
+      doToken,
+      appContext.appId,
+      doMetricType,
+      environment.doAccountId,
+      componentName,
+      startUnix,
+      endUnix,
+    );
   }
 
   /**
@@ -145,12 +167,13 @@ export class MonitoringService {
     userId: string,
     socket: Socket,
     serviceName?: string,
+    streamId?: string,
   ): Promise<void> {
     const environment = await this.getEnvironmentWithAccess(environmentId, userId);
     const appContext = await this.getAppContext(environment);
 
     if (!appContext) {
-      socket.emit('error', { message: 'App Platform outputs are missing' });
+      socket.emit('error', { message: 'App Platform outputs are missing', streamId });
       return;
     }
 
@@ -166,11 +189,22 @@ export class MonitoringService {
       componentName,
     );
 
-    socket.on('disconnect', () => {
+    // Register this generator under its streamId so a `stop:log-stream` (drawer
+    // closed / component unmounted) or a disconnect ends THIS stream specifically,
+    // instead of leaking a DO-polling generator per open/close.
+    const generators = ((socket.data as SocketData).logGenerators ??= new Map());
+    if (streamId) {
+      generators.set(streamId, logGenerator);
+    }
+    const cleanup = (): void => {
       logGenerator.return(undefined).catch(() => {
-        // Generator closed
+        // Generator already closed.
       });
-    });
+      if (streamId) {
+        generators.delete(streamId);
+      }
+    };
+    socket.on('disconnect', cleanup);
 
     try {
       for await (const line of logGenerator) {
@@ -178,16 +212,37 @@ export class MonitoringService {
           break;
         }
 
+        // `streamId` lets the client accept only its own stream's lines — without
+        // it, two LiveAppLogs on the shared socket each render every stream's lines
+        // (the duplicate-logs bug).
         socket.emit('log-line', {
           line,
           timestamp: new Date().toISOString(),
           level: this.detectLogLevel(line),
           source: 'do-app-platform',
+          streamId,
         });
       }
     } catch (error) {
       this.logger.warn(`Log streaming error: ${error instanceof Error ? error.message : 'Unknown error'}`);
-      socket.emit('error', { message: 'Failed to stream logs' });
+      socket.emit('error', { message: 'Failed to stream logs', streamId });
+    } finally {
+      cleanup();
+    }
+  }
+
+  /**
+   * Stops the generator registered under `streamId` for this socket. Called when
+   * a log viewer unmounts so we don't keep polling DigitalOcean for a closed view.
+   */
+  public stopLogStream(socket: Socket, streamId: string): void {
+    const generators = (socket.data as SocketData).logGenerators;
+    const generator = generators?.get(streamId);
+    if (generators && generator) {
+      generator.return(undefined).catch(() => {
+        // Already closed.
+      });
+      generators.delete(streamId);
     }
   }
 

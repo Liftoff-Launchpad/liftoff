@@ -2,22 +2,30 @@
 
 import {
   Activity,
-  Bell,
   ChevronDown,
   Circle,
   Code2,
   LayoutGrid,
   Loader2,
-  MessageSquare,
   MoreHorizontal,
   Plus,
   Rocket,
   ScrollText,
   Settings,
+  Trash2,
 } from 'lucide-react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { useState } from 'react';
 import { Button } from '@/components/ui/button';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -25,6 +33,8 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
+import { toast } from '@/components/ui/use-toast';
+import { useDeleteProject } from '@/hooks/queries/use-projects';
 import { cn } from '@/lib/utils';
 import { type DeploymentStatusType } from '@liftoff/shared';
 
@@ -84,7 +94,22 @@ export function CanvasToolbar({
   canDeploy,
 }: CanvasToolbarProps): JSX.Element {
   const [menuOpen, setMenuOpen] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const router = useRouter();
+  const deleteProject = useDeleteProject();
   const status = getProjectStatus(nodes);
+
+  const handleDeleteProject = () => {
+    deleteProject.mutate(projectId, {
+      onSuccess: () => {
+        toast({ title: 'Project deleted', description: `${projectName} was removed.` });
+        router.push('/projects');
+      },
+      onError: () => {
+        toast({ title: 'Could not delete project', variant: 'destructive' });
+      },
+    });
+  };
 
   return (
     <div className="absolute inset-x-0 top-0 z-20 flex h-16 items-center justify-between border-b border-border bg-background/90 px-5 backdrop-blur-xl">
@@ -158,14 +183,7 @@ export function CanvasToolbar({
         >
           <Activity className="h-4 w-4" />
         </Button>
-        <Button variant="ghost" size="icon" title="Notifications">
-          <Bell className="h-4 w-4" />
-        </Button>
         <div className="mx-1 h-7 w-px bg-border" />
-        <Button variant="ghost" className="hidden gap-2 sm:inline-flex">
-          <MessageSquare className="h-4 w-4" />
-          Agent
-        </Button>
         <Button onClick={onAddClick} variant="secondary" className="gap-2">
           <Plus className="h-4 w-4" />
           Add
@@ -193,10 +211,46 @@ export function CanvasToolbar({
               </Link>
             </DropdownMenuItem>
             <DropdownMenuSeparator />
-            <DropdownMenuItem className="text-destructive">Delete project</DropdownMenuItem>
+            <DropdownMenuItem
+              className="text-destructive focus:text-destructive"
+              onSelect={(event) => {
+                event.preventDefault();
+                setMenuOpen(false);
+                setDeleteOpen(true);
+              }}
+            >
+              <Trash2 className="mr-2 h-4 w-4" />
+              Delete project
+            </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
+
+      <Dialog open={deleteOpen} onOpenChange={setDeleteOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Delete {projectName}?</DialogTitle>
+            <DialogDescription>
+              This removes the project and all its environments from Liftoff. Provisioned cloud
+              resources are not torn down automatically.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setDeleteOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={handleDeleteProject}
+              disabled={deleteProject.isPending}
+              className="gap-2"
+            >
+              {deleteProject.isPending && <Loader2 className="h-4 w-4 animate-spin" />}
+              Delete project
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

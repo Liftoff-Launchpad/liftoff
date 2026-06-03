@@ -92,31 +92,12 @@ export function CanvasEmptyState({ projectId, onSetupComplete }: CanvasEmptyStat
       <div className="liftoff-canvas relative flex h-full w-full items-center justify-center overflow-hidden">
         <div className="pointer-events-none absolute inset-x-0 bottom-0 h-44 bg-[linear-gradient(180deg,transparent,hsl(var(--primary)/0.08))]" />
         <div className="liftoff-panel w-full max-w-lg overflow-hidden rounded-lg">
-          <div className="border-b border-border p-3">
-            <div className="relative">
-              <Sparkles className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-primary" />
-              <Input
-                placeholder="What would you like to create?"
-                className="h-12 border-primary/50 bg-background/70 pl-10"
-              />
-            </div>
-          </div>
-
-          <div className="space-y-1 border-b border-border p-3">
-            <button
-              type="button"
-              className="flex w-full items-center gap-3 rounded-md bg-secondary px-3 py-3 text-left text-sm font-medium"
-            >
-              <Sparkles className="h-4 w-4 text-foreground" />
-              Create to-do list function with a database
-            </button>
-            <button
-              type="button"
-              className="flex w-full items-center gap-3 rounded-md px-3 py-3 text-left text-sm text-muted-foreground hover:bg-secondary/70"
-            >
-              <Sparkles className="h-4 w-4" />
-              Deploy Redis, Postgres, and a bucket
-            </button>
+          <div className="border-b border-border p-5">
+            <h2 className="text-lg font-semibold">Deploy your first service</h2>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Pick a GitHub repository — Liftoff builds it and deploys to this project. Add
+              databases and wire them on the canvas afterwards.
+            </p>
           </div>
 
           <div className="space-y-3 p-3">
@@ -158,32 +139,6 @@ export function CanvasEmptyState({ projectId, onSetupComplete }: CanvasEmptyStat
                   {searchQuery ? 'No repositories found' : 'No repositories available'}
                 </p>
               )}
-            </div>
-
-            <div className="space-y-1 pt-1">
-              {[
-                { label: 'Database', icon: Database },
-                { label: 'Template', icon: Box },
-                { label: 'Docker Image', icon: UploadCloud },
-                { label: 'Function', icon: Terminal },
-                { label: 'Bucket', icon: Box },
-                { label: 'Empty Project', icon: Rocket },
-              ].map((item) => {
-                const Icon = item.icon;
-                return (
-                  <button
-                    key={item.label}
-                    type="button"
-                    className="flex w-full items-center justify-between rounded-md px-3 py-2.5 text-left text-sm text-muted-foreground transition-colors hover:bg-secondary/70 hover:text-foreground"
-                  >
-                    <span className="flex items-center gap-3">
-                      <Icon className="h-4 w-4" />
-                      {item.label}
-                    </span>
-                    <ChevronRight className="h-4 w-4" />
-                  </button>
-                );
-              })}
             </div>
 
             <Button className="w-full" size="lg" disabled={!selectedRepo} onClick={handleAutoDeployClick}>

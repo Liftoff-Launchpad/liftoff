@@ -37,6 +37,12 @@ export interface CreateResourceInput {
   canvasPosition?: { x: number; y: number };
 }
 
+export interface UpdateResourceInput {
+  name?: string;
+  config?: Record<string, unknown>;
+  canvasPosition?: { x: number; y: number };
+}
+
 /**
  * Lists graph Resource nodes for an environment.
  */
@@ -70,6 +76,31 @@ export function useCreateResource(projectId: string) {
     onError: (error: unknown) => {
       toast({
         title: "Couldn't add that resource",
+        description: apiErrorMessage(error, 'Please try again.'),
+        variant: 'destructive',
+      });
+    },
+    onSettled: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['canvas', projectId] });
+    },
+  });
+}
+
+/**
+ * Updates a Resource node's name/config (e.g. engine version or cluster size for
+ * a DRAFT database) and refreshes the canvas.
+ */
+export function useUpdateResource(projectId: string, resourceId: string) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (body: UpdateResourceInput) => {
+      const response = await apiClient.patch<ResourceRecord>(`/resources/${resourceId}`, body);
+      return response.data;
+    },
+    onError: (error: unknown) => {
+      toast({
+        title: "Couldn't update that resource",
         description: apiErrorMessage(error, 'Please try again.'),
         variant: 'destructive',
       });

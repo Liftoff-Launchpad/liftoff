@@ -40,6 +40,7 @@ const schema = z.object({
     .min(2)
     .max(40)
     .regex(/^[a-z0-9][a-z0-9-]*$/, 'Lowercase letters, numbers, hyphens only'),
+  kind: z.enum(['SERVICE', 'WORKER']).default('SERVICE'),
   sourceDir: z.string().min(1).default('.'),
   buildStrategy: z.enum(buildStrategyOptions).default('AUTO'),
   dockerfilePath: z.string().min(1).default('Dockerfile'),
@@ -76,6 +77,7 @@ export function AddServiceDialog({
     resolver: zodResolver(schema),
     defaultValues: {
       name: '',
+      kind: 'SERVICE',
       sourceDir: '.',
       buildStrategy: 'AUTO',
       dockerfilePath: 'Dockerfile',
@@ -93,16 +95,18 @@ export function AddServiceDialog({
     try {
       await createServiceMutation.mutateAsync({
         name: values.name,
+        kind: values.kind,
         sourceDir: values.sourceDir,
         buildStrategy: values.buildStrategy,
         dockerfilePath: values.dockerfilePath,
         port: values.port,
         instanceSize: values.instanceSize,
         replicas: values.replicas,
-        // Route/healthcheck: empty string means "leave default", which the API
-        // resolves to "/<name>" for non-first services and a TCP probe respectively.
-        ...(values.routePath ? { routePath: values.routePath } : {}),
-        ...(values.healthcheckPath ? { healthcheckPath: values.healthcheckPath } : {}),
+        // Routes/healthcheck are HTTP-only — workers don't get them.
+        ...(values.kind === 'SERVICE' && values.routePath ? { routePath: values.routePath } : {}),
+        ...(values.kind === 'SERVICE' && values.healthcheckPath
+          ? { healthcheckPath: values.healthcheckPath }
+          : {}),
         ...(values.command ? { command: values.command } : {}),
       });
       toast({
@@ -143,6 +147,24 @@ export function AddServiceDialog({
               {form.formState.errors.name?.message && (
                 <p className="text-xs text-destructive">{form.formState.errors.name.message}</p>
               )}
+            </div>
+
+            <div className="space-y-1 col-span-2">
+              <Label>Type</Label>
+              <Select
+                value={form.watch('kind')}
+                onValueChange={(value) =>
+                  form.setValue('kind', value as FormValues['kind'], { shouldValidate: true })
+                }
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="SERVICE">Web service (HTTP, public route)</SelectItem>
+                  <SelectItem value="WORKER">Worker (background, no route)</SelectItem>
+                </SelectContent>
+              </Select>
             </div>
 
             <div className="space-y-1 col-span-2">
@@ -215,21 +237,25 @@ export function AddServiceDialog({
               </Select>
             </div>
 
-            <div className="space-y-1">
-              <Label htmlFor="svc-route">Route path</Label>
-              <Input id="svc-route" placeholder="/api" {...form.register('routePath')} />
-              <p className="text-xs text-muted-foreground">Empty = auto (/&lt;name&gt;)</p>
-            </div>
+            {form.watch('kind') === 'SERVICE' && (
+              <>
+                <div className="space-y-1">
+                  <Label htmlFor="svc-route">Route path</Label>
+                  <Input id="svc-route" placeholder="/api" {...form.register('routePath')} />
+                  <p className="text-xs text-muted-foreground">Empty = auto (/&lt;name&gt;)</p>
+                </div>
 
-            <div className="space-y-1">
-              <Label htmlFor="svc-health">Healthcheck path</Label>
-              <Input
-                id="svc-health"
-                placeholder="/health"
-                {...form.register('healthcheckPath')}
-              />
-              <p className="text-xs text-muted-foreground">Empty = TCP probe</p>
-            </div>
+                <div className="space-y-1">
+                  <Label htmlFor="svc-health">Healthcheck path</Label>
+                  <Input
+                    id="svc-health"
+                    placeholder="/health"
+                    {...form.register('healthcheckPath')}
+                  />
+                  <p className="text-xs text-muted-foreground">Empty = TCP probe</p>
+                </div>
+              </>
+            )}
 
             <div className="space-y-1 col-span-2">
               <Label htmlFor="svc-command">Start command</Label>

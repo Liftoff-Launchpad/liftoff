@@ -49,6 +49,7 @@ export interface CanvasNode {
     resourceId?: string;
     resourceKind?: string;
     resourceStatus?: string;
+    resourceConfig?: Record<string, unknown>;
     isStaged?: boolean;
   };
 }
@@ -273,6 +274,7 @@ export class CanvasService {
       resourceId: resource.id,
       resourceKind: resource.kind,
       resourceStatus: resource.status,
+      resourceConfig: (resource.config ?? undefined) as Record<string, unknown> | undefined,
       outputs,
     };
 

@@ -5,6 +5,8 @@ import { Handle, Position, type NodeProps } from '@xyflow/react';
 import { Box, Database, Zap } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
+type ResourceStatus = 'DRAFT' | 'PROVISIONING' | 'ACTIVE' | 'FAILED' | 'DESTROYING';
+
 interface DatabaseNodeData {
   label: string;
   environmentId: string;
@@ -13,6 +15,7 @@ interface DatabaseNodeData {
   port?: number;
   bucketName?: string;
   isStaged?: boolean;
+  resourceStatus?: ResourceStatus;
   outputs?: Record<string, string>;
 }
 
@@ -22,12 +25,32 @@ const ENGINE_CONFIG = {
   storage: { icon: Box, label: 'Spaces', color: 'border-orange-500/50' },
 };
 
+/** Maps a resource status to its indicator dot color + whether it should pulse. */
+function statusDot(status: ResourceStatus | undefined): { className: string; pulse: boolean } {
+  switch (status) {
+    case 'ACTIVE':
+      return { className: 'bg-emerald-400', pulse: false };
+    case 'FAILED':
+      return { className: 'bg-red-500', pulse: false };
+    case 'PROVISIONING':
+    case 'DESTROYING':
+      return { className: 'bg-amber-400', pulse: true };
+    case 'DRAFT':
+      return { className: 'bg-amber-400/70', pulse: false };
+    default:
+      return { className: 'bg-muted-foreground/50', pulse: false };
+  }
+}
+
 function DatabaseNodeComponent({ data, selected }: NodeProps) {
   const d = data as unknown as DatabaseNodeData;
   const engine = d.databaseEngine ?? 'postgres';
   const cfg = ENGINE_CONFIG[engine] ?? ENGINE_CONFIG.postgres;
   const Icon = cfg.icon;
-  const borderColor = d.isStaged ? 'border-amber-400' : cfg.color;
+  const status = d.resourceStatus;
+  const isDraft = status === 'DRAFT' || (!status && d.isStaged);
+  const borderColor = isDraft ? 'border-amber-400' : cfg.color;
+  const dot = statusDot(status);
 
   return (
     <div
@@ -54,9 +77,10 @@ function DatabaseNodeComponent({ data, selected }: NodeProps) {
             <p className="text-xs text-muted-foreground">{cfg.label}</p>
           </div>
         </div>
-        {!d.isStaged && (
-          <span className="h-2.5 w-2.5 rounded-full bg-emerald-400" />
-        )}
+        <span
+          title={status ?? 'unknown'}
+          className={cn('h-2.5 w-2.5 rounded-full', dot.className, dot.pulse && 'animate-pulse')}
+        />
       </div>
 
       <div className="px-4 py-3 space-y-2">
@@ -77,9 +101,9 @@ function DatabaseNodeComponent({ data, selected }: NodeProps) {
         )}
       </div>
 
-      {d.isStaged && (
+      {isDraft && (
         <div className="absolute -top-2 -right-2 rounded-full bg-amber-400 px-1.5 py-0.5 text-[10px] font-bold text-black">
-          STAGED
+          DRAFT
         </div>
       )}
 

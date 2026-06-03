@@ -38,14 +38,23 @@ export class MonitoringController {
   }
 
   /**
-   * Fetches CPU percentage metrics.
+   * Fetches CPU percentage metrics. `service` scopes to one App Platform
+   * component; `range` (1h/6h/1d/7d/30d) selects the time window.
    */
   @Get('metrics/cpu')
   public getCpuMetrics(
     @Param('environmentId') environmentId: string,
     @CurrentUser() user?: User,
+    @Query('service') service?: string,
+    @Query('range') range?: string,
   ) {
-    return this.monitoringService.getMetrics(environmentId, user?.id ?? '', 'cpu');
+    return this.monitoringService.getMetrics(
+      environmentId,
+      user?.id ?? '',
+      'cpu',
+      service?.trim() || undefined,
+      rangeToHours(range),
+    );
   }
 
   /**
@@ -55,8 +64,16 @@ export class MonitoringController {
   public getMemoryMetrics(
     @Param('environmentId') environmentId: string,
     @CurrentUser() user?: User,
+    @Query('service') service?: string,
+    @Query('range') range?: string,
   ) {
-    return this.monitoringService.getMetrics(environmentId, user?.id ?? '', 'memory');
+    return this.monitoringService.getMetrics(
+      environmentId,
+      user?.id ?? '',
+      'memory',
+      service?.trim() || undefined,
+      rangeToHours(range),
+    );
   }
 
   /**
@@ -66,7 +83,31 @@ export class MonitoringController {
   public getBandwidthMetrics(
     @Param('environmentId') environmentId: string,
     @CurrentUser() user?: User,
+    @Query('service') service?: string,
+    @Query('range') range?: string,
   ) {
-    return this.monitoringService.getMetrics(environmentId, user?.id ?? '', 'bandwidth');
+    return this.monitoringService.getMetrics(
+      environmentId,
+      user?.id ?? '',
+      'bandwidth',
+      service?.trim() || undefined,
+      rangeToHours(range),
+    );
+  }
+}
+
+/** Maps a UI range token to a window size in hours. */
+function rangeToHours(range: string | undefined): number {
+  switch (range) {
+    case '6h':
+      return 6;
+    case '1d':
+      return 24;
+    case '7d':
+      return 168;
+    case '30d':
+      return 720;
+    default:
+      return 1;
   }
 }
