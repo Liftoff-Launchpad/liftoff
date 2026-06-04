@@ -17,6 +17,7 @@ describe('WebhooksService', () => {
   const prismaServiceMock = {
     repository: {
       findMany: jest.fn(),
+      findFirst: jest.fn(),
     },
     environment: {
       findFirst: jest.fn(),
@@ -50,6 +51,9 @@ describe('WebhooksService', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    // Phase F: the push handler resolves the project's primary repo to decide
+    // whether the pushed repo adopts unassigned services.
+    prismaServiceMock.repository.findFirst.mockResolvedValue({ id: 'r1' });
     service = new WebhooksService(
       prismaServiceMock as unknown as PrismaService,
       encryptionServiceMock as unknown as EncryptionService,
@@ -136,6 +140,63 @@ describe('WebhooksService', () => {
     await service.handleGitHubPush(pushPayload, 'sha256=sig', Buffer.from('{}', 'utf8'));
 
     expect(prismaServiceMock.deploymentBundle.create).not.toHaveBeenCalled();
+  });
+
+  it('handleGitHubPush (multi-repo) only deploys services owned by the pushed repo', async () => {
+    // Push is from r2, but the project's primary repo is r1 — so r2 must NOT
+    // adopt unassigned (null repositoryId) services.
+    prismaServiceMock.repository.findMany.mockResolvedValue([
+      { id: 'r2', projectId: 'p1', webhookSecret: 's2' },
+    ]);
+    githubServiceMock.verifyWebhookSignature.mockReturnValue(true);
+    prismaServiceMock.repository.findFirst.mockResolvedValue({ id: 'r1' });
+    prismaServiceMock.environment.findFirst.mockResolvedValue({
+      id: 'env-1',
+      services: [{ id: 'svc-2', name: 'api' }],
+    });
+    prismaServiceMock.deployment.findFirst.mockResolvedValue(null);
+    prismaServiceMock.deploymentBundle.create.mockResolvedValue({
+      id: 'bundle-1',
+      deployments: [{ id: 'dep-2' }],
+    });
+    deploymentsQueueMock.add.mockResolvedValue(undefined);
+    prismaServiceMock.deployment.updateMany.mockResolvedValue(undefined);
+
+    await service.handleGitHubPush(pushPayload, 'sha256=sig', Buffer.from('{}', 'utf8'));
+
+    const call = prismaServiceMock.environment.findFirst.mock.calls[0]![0] as {
+      select: { services: { where: unknown } };
+    };
+    expect(call.select.services.where).toEqual({ deletedAt: null, repositoryId: 'r2' });
+  });
+
+  it('handleGitHubPush (primary repo) also deploys unassigned services', async () => {
+    prismaServiceMock.repository.findMany.mockResolvedValue([
+      { id: 'r1', projectId: 'p1', webhookSecret: 's1' },
+    ]);
+    githubServiceMock.verifyWebhookSignature.mockReturnValue(true);
+    prismaServiceMock.repository.findFirst.mockResolvedValue({ id: 'r1' });
+    prismaServiceMock.environment.findFirst.mockResolvedValue({
+      id: 'env-1',
+      services: [{ id: 'svc-1', name: 'web' }],
+    });
+    prismaServiceMock.deployment.findFirst.mockResolvedValue(null);
+    prismaServiceMock.deploymentBundle.create.mockResolvedValue({
+      id: 'bundle-1',
+      deployments: [{ id: 'dep-1' }],
+    });
+    deploymentsQueueMock.add.mockResolvedValue(undefined);
+    prismaServiceMock.deployment.updateMany.mockResolvedValue(undefined);
+
+    await service.handleGitHubPush(pushPayload, 'sha256=sig', Buffer.from('{}', 'utf8'));
+
+    const call = prismaServiceMock.environment.findFirst.mock.calls[0]![0] as {
+      select: { services: { where: unknown } };
+    };
+    expect(call.select.services.where).toEqual({
+      deletedAt: null,
+      OR: [{ repositoryId: 'r1' }, { repositoryId: null }],
+    });
   });
 
   it('handleDeployComplete marks the service deployment FAILED on a build failure', async () => {

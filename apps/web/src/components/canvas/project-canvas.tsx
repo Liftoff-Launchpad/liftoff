@@ -27,6 +27,8 @@ import { AddServiceDialog } from './add-service-dialog';
 import { CanvasEmptyState } from './canvas-empty-state';
 import { ServiceNode } from './service-node';
 import { DatabaseNode } from './database-node';
+import { RepositoryNode } from './repository-node';
+import { EdgeConfigPopover } from './edge-config-popover';
 import { CanvasToolbar } from './canvas-toolbar';
 import { CanvasActivity } from './canvas-activity';
 import { ConfigDrawer } from './config-drawer/config-drawer';
@@ -59,6 +61,7 @@ const nodeTypes: Record<string, React.ComponentType<any>> = {
   database: DatabaseNode,
   redis: DatabaseNode,
   storage: DatabaseNode,
+  repository: RepositoryNode,
 };
 
 function toRFNodes(nodes: CanvasNode[]): RFNode[] {
@@ -67,23 +70,42 @@ function toRFNodes(nodes: CanvasNode[]): RFNode[] {
     type: n.type,
     position: n.position,
     data: n.data,
+    // Repository nodes are fixed-position provenance anchors (no canvasPosition row).
+    ...(n.type === 'repository' ? { draggable: false } : {}),
   }));
 }
 
 function toRFEdges(edges: CanvasEdge[]): Edge[] {
-  return edges.map((e) => ({
-    id: e.id,
-    source: e.source,
-    target: e.target,
-    animated: true,
-    label: e.label,
-    labelStyle: { fill: 'hsl(var(--muted-foreground))', fontSize: 11, fontFamily: 'var(--font-mono, monospace)' },
-    labelBgStyle: { fill: 'hsl(var(--card))', fillOpacity: 0.9 },
-    labelBgPadding: [6, 3] as [number, number],
-    labelBgBorderRadius: 4,
-    style: { stroke: 'hsl(var(--muted-foreground) / 0.35)', strokeWidth: 2 },
-    markerEnd: { type: MarkerType.ArrowClosed, color: 'hsl(var(--muted-foreground) / 0.35)' },
-  }));
+  return edges.map((e) => {
+    // Repo → service provenance edges: dashed, muted, no arrow label.
+    if (e.kind === 'repo') {
+      return {
+        id: e.id,
+        source: e.source,
+        target: e.target,
+        animated: false,
+        style: {
+          stroke: 'hsl(var(--muted-foreground) / 0.25)',
+          strokeWidth: 1.5,
+          strokeDasharray: '4 4',
+        },
+        markerEnd: { type: MarkerType.ArrowClosed, color: 'hsl(var(--muted-foreground) / 0.25)' },
+      };
+    }
+    return {
+      id: e.id,
+      source: e.source,
+      target: e.target,
+      animated: true,
+      label: e.label,
+      labelStyle: { fill: 'hsl(var(--muted-foreground))', fontSize: 11, fontFamily: 'var(--font-mono, monospace)' },
+      labelBgStyle: { fill: 'hsl(var(--card))', fillOpacity: 0.9 },
+      labelBgPadding: [6, 3] as [number, number],
+      labelBgBorderRadius: 4,
+      style: { stroke: 'hsl(var(--muted-foreground) / 0.35)', strokeWidth: 2 },
+      markerEnd: { type: MarkerType.ArrowClosed, color: 'hsl(var(--muted-foreground) / 0.35)' },
+    };
+  });
 }
 
 export function ProjectCanvas({ projectId }: ProjectCanvasProps) {
@@ -105,6 +127,11 @@ export function ProjectCanvas({ projectId }: ProjectCanvasProps) {
   const [activityOpen, setActivityOpen] = useState(false);
   const [addServiceOpen, setAddServiceOpen] = useState(false);
   const [logsPanelOpen, setLogsPanelOpen] = useState(false);
+  const [edgePopover, setEdgePopover] = useState<{
+    connectionId: string;
+    sourceResourceKind: 'POSTGRES' | 'REDIS' | 'SPACES_BUCKET' | null;
+    position: { x: number; y: number };
+  } | null>(null);
 
   const addChange = useStagedChangesStore((s) => s.addChange);
 
@@ -197,7 +224,10 @@ export function ProjectCanvas({ projectId }: ProjectCanvasProps) {
     (changes: EdgeChange<Edge>[]) => {
       onEdgesChange(changes);
       for (const change of changes) {
-        if (change.type === 'remove' && canvasData?.edges.some((e) => e.id === change.id)) {
+        if (change.type !== 'remove') continue;
+        const edge = canvasData?.edges.find((e) => e.id === change.id);
+        // Only persisted Connection edges are deletable; repo provenance edges are derived.
+        if (edge && edge.kind !== 'repo') {
           deleteConnection.mutate(change.id);
         }
       }
@@ -206,12 +236,37 @@ export function ProjectCanvas({ projectId }: ProjectCanvasProps) {
   );
 
   const onNodeClick = useCallback((_: unknown, node: RFNode) => {
+    // Repository nodes are informational (no service/resource drawer).
+    if (node.type === 'repository') return;
     setSelectedNode(node);
+    setEdgePopover(null);
   }, []);
+
+  // Click a resource→service binding edge to preview/configure its injected vars.
+  const onEdgeClick = useCallback(
+    (event: React.MouseEvent, edge: Edge) => {
+      const canvasEdge = canvasData?.edges.find((e) => e.id === edge.id);
+      if (!canvasEdge || canvasEdge.kind === 'repo') return;
+      const sourceNode = canvasData?.nodes.find((n) => n.id === edge.source);
+      const kind = (sourceNode?.data.resourceKind ?? null) as
+        | 'POSTGRES'
+        | 'REDIS'
+        | 'SPACES_BUCKET'
+        | null;
+      if (!kind) return; // only resource bindings expose detailed-var config
+      setEdgePopover({
+        connectionId: edge.id,
+        sourceResourceKind: kind,
+        position: { x: event.clientX, y: event.clientY },
+      });
+    },
+    [canvasData],
+  );
 
   const onPaneClick = useCallback(() => {
     setSelectedNode(null);
     setContextMenuPos(null);
+    setEdgePopover(null);
   }, []);
 
   const onPaneContextMenu = useCallback((event: { preventDefault: () => void; clientX: number; clientY: number }) => {
@@ -398,7 +453,9 @@ export function ProjectCanvas({ projectId }: ProjectCanvasProps) {
     );
   }
 
-  const hasNodes = nodes.length > 0;
+  // Repository nodes are provenance anchors, not deployable content — a project
+  // with only a repo node (no services/resources) still needs the onboarding state.
+  const hasNodes = nodes.some((n) => n.type !== 'repository');
 
   return (
     <div ref={reactFlowWrapper} className="h-full w-full overflow-hidden bg-background">
@@ -434,6 +491,7 @@ export function ProjectCanvas({ projectId }: ProjectCanvasProps) {
           onEdgesChange={handleEdgesChange}
           onConnect={onConnect}
           onNodeClick={onNodeClick}
+          onEdgeClick={onEdgeClick}
           onPaneClick={onPaneClick}
           onPaneContextMenu={onPaneContextMenu}
           nodeTypes={nodeTypes}
@@ -454,6 +512,16 @@ export function ProjectCanvas({ projectId }: ProjectCanvasProps) {
             className="!m-4 !overflow-hidden !rounded-lg !border !border-border/80 !bg-card/90 !shadow-[0_18px_60px_hsl(252_30%_2%/0.35)] [&>button]:!h-10 [&>button]:!w-10 [&>button]:!border-border/80 [&>button]:!bg-card/95 [&>button]:!text-muted-foreground [&>button:hover]:!bg-secondary [&>button:hover]:!text-foreground"
           />
         </ReactFlow>
+      )}
+
+      {edgePopover && (
+        <EdgeConfigPopover
+          projectId={projectId}
+          connectionId={edgePopover.connectionId}
+          sourceResourceKind={edgePopover.sourceResourceKind}
+          position={edgePopover.position}
+          onClose={() => setEdgePopover(null)}
+        />
       )}
 
       {activityOpen && (

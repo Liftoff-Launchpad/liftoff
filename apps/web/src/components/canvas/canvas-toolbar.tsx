@@ -43,7 +43,7 @@ type ViewMode = 'canvas' | 'dev';
 interface CanvasToolbarProps {
   projectId: string;
   projectName: string;
-  nodes: Array<{ data: { status?: DeploymentStatusType } }>;
+  nodes: Array<{ type?: string; data: { status?: DeploymentStatusType } }>;
   mode: ViewMode;
   onModeChange: (mode: ViewMode) => void;
   onAddClick: () => void;
@@ -61,10 +61,13 @@ interface CanvasToolbarProps {
   canDeploy: boolean;
 }
 
-function getProjectStatus(nodes: Array<{ data: { status?: DeploymentStatusType } }>): {
+function getProjectStatus(allNodes: Array<{ type?: string; data: { status?: DeploymentStatusType } }>): {
   label: string;
   variant: 'success' | 'warning' | 'destructive' | 'secondary';
 } {
+  // Only service nodes carry a deployment status. Repository and resource nodes
+  // have none — including them would keep "Live" from ever showing.
+  const nodes = allNodes.filter((n) => n.type === 'service');
   if (nodes.length === 0) return { label: 'No services', variant: 'secondary' };
   if (nodes.some((n) => n.data.status === 'FAILED')) return { label: 'Failed', variant: 'destructive' };
   if (

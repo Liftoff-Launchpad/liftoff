@@ -11,6 +11,7 @@ import { EventsGateway } from '../events/events.gateway';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   DeployJobPayload,
+  InfraProvisionJobPayload,
   JOB_NAMES,
   QUEUE_NAMES,
   QUEUE_TIMEOUTS,
@@ -24,6 +25,7 @@ type DeploymentExecutionContext = Prisma.DeploymentGetPayload<{
         id: true;
         projectId: true;
         doAccountId: true;
+        configYaml: true;
         doAccount: {
           select: {
             doToken: true;
@@ -38,6 +40,13 @@ type DeploymentExecutionContext = Prisma.DeploymentGetPayload<{
     };
   };
 }>;
+
+/** Returned by the deploy cycle when the live App spec has no component for an
+ *  image (a brand-new service or a changed image-repository path) — the caller
+ *  re-provisions instead of failing. */
+interface AppDeployNeedsProvision {
+  needsProvision: true;
+}
 
 interface AppDeploymentContext {
   appId: string;
@@ -70,6 +79,8 @@ export class DeploymentProcessor extends WorkerHost {
     private readonly eventsGateway: EventsGateway,
     @InjectQueue(QUEUE_NAMES.DEPLOYMENTS)
     private readonly deploymentsQueue: Queue<DeployJobPayload | RollbackJobPayload>,
+    @InjectQueue(QUEUE_NAMES.INFRASTRUCTURE)
+    private readonly infrastructureQueue: Queue<InfraProvisionJobPayload>,
   ) {
     super();
   }
@@ -140,7 +151,7 @@ export class DeploymentProcessor extends WorkerHost {
       this.broadcastDeploymentStatus(deploymentId, DeploymentStatus.DEPLOYING);
     }
 
-    let deployCycleResult: AppDeployCycleResult;
+    let deployCycleResult: AppDeployCycleResult | AppDeployNeedsProvision;
     try {
       deployCycleResult = await this.deployImagesToApp(
         doToken,
@@ -153,6 +164,13 @@ export class DeploymentProcessor extends WorkerHost {
       await this.failBundleOrDeployment(affectedDeploymentIds, errorMessage);
       await this.queueAutoRollback(deployment.id, deployment.environmentId);
       throw error;
+    }
+
+    // Spec out of date (new service / changed image path) → re-provision instead
+    // of failing. Pulumi rebuilds the full App spec from the env's current rows.
+    if ('needsProvision' in deployCycleResult) {
+      await this.fallbackToProvision(deployment, job.data.bundleId ?? null, affectedDeploymentIds);
+      return;
     }
 
     if (deployCycleResult.outcome === 'ACTIVE') {
@@ -239,6 +257,47 @@ export class DeploymentProcessor extends WorkerHost {
   }
 
   /**
+   * Re-provisions when an image-patch deploy found no matching App spec component
+   * (new service or changed image-repository path). Enqueues a PROVISION for the
+   * bundle — the infra processor rebuilds the whole App spec from the env's rows,
+   * reusing last-good images for services not in the bundle.
+   */
+  private async fallbackToProvision(
+    deployment: DeploymentExecutionContext,
+    bundleId: string | null,
+    affectedDeploymentIds: string[],
+  ): Promise<void> {
+    this.logger.log(
+      `Deploy for env ${deployment.environment.id} hit an out-of-date App spec — ` +
+        `re-provisioning${bundleId ? ` bundle ${bundleId}` : ''}`,
+    );
+
+    await this.prismaService.deployment.updateMany({
+      where: { id: { in: affectedDeploymentIds } },
+      data: { status: DeploymentStatus.PROVISIONING, errorMessage: null },
+    });
+    for (const deploymentId of affectedDeploymentIds) {
+      this.broadcastDeploymentStatus(deploymentId, DeploymentStatus.PROVISIONING);
+    }
+
+    await this.infrastructureQueue.add(
+      JOB_NAMES.INFRASTRUCTURE.PROVISION,
+      {
+        deploymentId: deployment.id,
+        environmentId: deployment.environment.id,
+        imageUri: deployment.imageUri ?? '',
+        configYaml: deployment.environment.configYaml ?? '',
+        bundleId: bundleId ?? undefined,
+      },
+      {
+        attempts: 3,
+        backoff: { type: 'exponential', delay: 5000 },
+        timeout: QUEUE_TIMEOUTS.DEPLOYMENT_JOB_TIMEOUT_MS,
+      } as Parameters<Queue<InfraProvisionJobPayload>['add']>[2] & { timeout: number },
+    );
+  }
+
+  /**
    * Runs rollback by deploying the target deployment image.
    */
   private async handleRollback(job: Job<RollbackJobPayload>): Promise<void> {
@@ -267,7 +326,7 @@ export class DeploymentProcessor extends WorkerHost {
     });
     this.broadcastDeploymentStatus(deployment.id, DeploymentStatus.ROLLING_BACK);
 
-    let deployCycleResult: AppDeployCycleResult;
+    let deployCycleResult: AppDeployCycleResult | AppDeployNeedsProvision;
     try {
       deployCycleResult = await this.deployImagesToApp(
         doToken,
@@ -279,6 +338,19 @@ export class DeploymentProcessor extends WorkerHost {
       const errorMessage = this.sanitizeErrorMessage(this.resolveErrorMessage(error));
       await this.failDeployment(deployment.id, errorMessage);
       throw error;
+    }
+
+    if ('needsProvision' in deployCycleResult) {
+      // The rollback image's component is no longer in the live spec — patching
+      // can't restore it; a re-provision would be needed.
+      await this.failDeployment(
+        deployment.id,
+        'Rollback target image has no matching App Platform component — re-provision the environment',
+      );
+      throw Exceptions.internalError(
+        'Rollback target image has no matching App Platform component',
+        ErrorCodes.INTERNAL_ERROR,
+      );
     }
 
     if (deployCycleResult.outcome === 'ACTIVE') {
@@ -326,6 +398,7 @@ export class DeploymentProcessor extends WorkerHost {
             id: true,
             projectId: true,
             doAccountId: true,
+            configYaml: true,
             doAccount: {
               select: {
                 doToken: true,
@@ -438,7 +511,7 @@ export class DeploymentProcessor extends WorkerHost {
     doAccountId: string,
     appContext: AppDeploymentContext,
     imageUris: string[],
-  ): Promise<AppDeployCycleResult> {
+  ): Promise<AppDeployCycleResult | AppDeployNeedsProvision> {
     if (imageUris.length === 0) {
       throw Exceptions.badRequest(
         'No image URIs to deploy',
@@ -448,8 +521,19 @@ export class DeploymentProcessor extends WorkerHost {
 
     const app = await this.doApiService.getApp(doToken, appContext.appId, doAccountId);
     let nextSpec: Record<string, unknown> = app.spec as Record<string, unknown>;
+    let allMatched = true;
     for (const imageUri of imageUris) {
-      nextSpec = this.buildUpdatedAppSpec({ ...app, spec: nextSpec }, imageUri);
+      const result = this.buildUpdatedAppSpec({ ...app, spec: nextSpec }, imageUri);
+      nextSpec = result.spec;
+      if (!result.matched) {
+        allMatched = false;
+      }
+    }
+
+    // An image with no matching live component means the spec needs a rebuild —
+    // signal the caller to re-provision rather than push a partial/stale spec.
+    if (!allMatched) {
+      return { needsProvision: true };
     }
 
     await this.doApiService.updateApp(doToken, appContext.appId, nextSpec, doAccountId);
@@ -476,7 +560,10 @@ export class DeploymentProcessor extends WorkerHost {
    * one entry with repository `<project>/<env>` and incoming image
    * `<docr>/<project>/<env>:<sha>` — the repositories match, so the patch lands.
    */
-  private buildUpdatedAppSpec(app: DOApp, imageUri: string): Record<string, unknown> {
+  private buildUpdatedAppSpec(
+    app: DOApp,
+    imageUri: string,
+  ): { spec: Record<string, unknown>; matched: boolean } {
     if (!this.isRecord(app.spec)) {
       throw Exceptions.internalError('App Platform spec is missing', ErrorCodes.INTERNAL_ERROR);
     }
@@ -488,15 +575,11 @@ export class DeploymentProcessor extends WorkerHost {
       this.patchMatchingImageEntry(nextSpec, 'workers', parsedImageUri) +
       this.patchMatchingImageEntry(nextSpec, 'jobs', parsedImageUri);
 
-    if (updatedCount === 0) {
-      throw Exceptions.internalError(
-        `App Platform spec has no component matching image repository "${parsedImageUri.repository}". ` +
-          'The Pulumi stack may be out of date — a re-provision is required to add the new service.',
-        ErrorCodes.INTERNAL_ERROR,
-      );
-    }
-
-    return nextSpec;
+    // No matching component means the live spec is out of date relative to the
+    // env's services (a brand-new service, or a service whose image-repository
+    // path changed when the env crossed the 1→N service namespacing boundary).
+    // The caller re-provisions (Pulumi rebuilds the whole spec) rather than fail.
+    return { spec: nextSpec, matched: updatedCount > 0 };
   }
 
   private patchMatchingImageEntry(

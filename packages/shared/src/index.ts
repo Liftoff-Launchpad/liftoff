@@ -16,4 +16,3 @@ export * from './types/environment';
 export * from './types/project';
 export * from './types/repository';
 export * from './types/user';
-export * from './types/pipeline';

@@ -32,6 +32,8 @@ export type JobKind = 'cron' | 'pre_deploy' | 'post_deploy' | 'failed_deploy';
 export interface CreateServiceInput {
   name: string;
   kind?: ServiceKind;
+  /** Which connected repo builds this service (Phase F). Defaults to primary. */
+  repositoryId?: string | null;
   sourceDir?: string;
   buildStrategy?: 'AUTO' | 'DOCKERFILE' | 'NIXPACKS';
   dockerfilePath?: string;
@@ -50,6 +52,8 @@ export interface CreateServiceInput {
 
 export interface UpdateServiceInput {
   name?: string;
+  /** Re-point this service to another connected repo, or null to detach (Phase F). */
+  repositoryId?: string | null;
   sourceDir?: string;
   buildStrategy?: 'AUTO' | 'DOCKERFILE' | 'NIXPACKS';
   dockerfilePath?: string;

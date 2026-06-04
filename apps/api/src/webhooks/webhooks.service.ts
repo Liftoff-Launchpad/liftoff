@@ -150,12 +150,28 @@ export class WebhooksService {
     );
 
     const branch = payload.ref.replace('refs/heads/', '');
+
+    // Phase F: a push only deploys the services that build FROM the pushed repo.
+    // Unassigned (null repositoryId) services belong to the project's primary
+    // (oldest) repo, preserving single-repo behavior.
+    const primaryRepo = await this.prismaService.repository.findFirst({
+      where: { projectId: matchedRepository.projectId },
+      orderBy: { createdAt: 'asc' },
+      select: { id: true },
+    });
+    const pushedRepoOwnsUnassigned = primaryRepo?.id === matchedRepository.id;
+
     const environment = await this.prismaService.environment.findFirst({
       where: { projectId: matchedRepository.projectId, gitBranch: branch, deletedAt: null },
       select: {
         id: true,
         services: {
-          where: { deletedAt: null },
+          where: {
+            deletedAt: null,
+            ...(pushedRepoOwnsUnassigned
+              ? { OR: [{ repositoryId: matchedRepository.id }, { repositoryId: null }] }
+              : { repositoryId: matchedRepository.id }),
+          },
           orderBy: { createdAt: 'asc' },
         },
       },
@@ -169,7 +185,7 @@ export class WebhooksService {
 
     if (environment.services.length === 0) {
       this.logger.warn(
-        `Ignoring push for environment ${environment.id}: no Service rows yet — UI must create at least one`,
+        `Ignoring push for environment ${environment.id}: no services build from ${payload.repository.full_name}`,
       );
       return;
     }

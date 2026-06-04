@@ -150,9 +150,30 @@ export class InfrastructureProcessor extends WorkerHost {
     });
     this.broadcastDeploymentStatus(deployment.id, DeploymentStatus.PROVISIONING);
 
-    const serviceImages = job.data.bundleId
-      ? await this.resolveServiceImagesFromBundle(job.data.bundleId)
-      : this.resolveServiceImagesSingle(config, job.data.imageUri);
+    let serviceImages: Record<string, string>;
+    let deployableConfig = config;
+    if (job.data.bundleId) {
+      serviceImages = await this.resolveServiceImagesFromBundle(
+        job.data.bundleId,
+        deployment.environment.id,
+      );
+      // Phase F: a push bundles only the pushed repo's services, but the compiled
+      // spec covers the whole env. Deploy services that have an image (this bundle's
+      // fresh ones + each other service's last-good); omit services whose repo has
+      // never built so one repo's push doesn't fail the whole atomic apply.
+      deployableConfig = {
+        ...config,
+        services: config.services.filter((service) => serviceImages[service.name]),
+      };
+      if (deployableConfig.services.length === 0) {
+        throw Exceptions.internalError(
+          'No service has a deployable image yet for this environment',
+          ErrorCodes.DEPLOYMENT_IMAGE_NOT_FOUND,
+        );
+      }
+    } else {
+      serviceImages = this.resolveServiceImagesSingle(config, job.data.imageUri);
+    }
     const serviceVariables = await this.resolveServiceVariablesForEnv(deployment.environment.id);
 
     const stackArgs: AppPlatformStackArgs = {
@@ -162,7 +183,7 @@ export class InfrastructureProcessor extends WorkerHost {
       environmentId: deployment.environment.id,
       doRegion: deployment.environment.doAccount.region,
       doToken,
-      config,
+      config: deployableConfig,
       serviceImages,
       serviceVariables,
       resources: compiledGraph.resources,
@@ -354,6 +375,7 @@ export class InfrastructureProcessor extends WorkerHost {
    */
   private async resolveServiceImagesFromBundle(
     bundleId: string,
+    environmentId: string,
   ): Promise<Record<string, string>> {
     const deployments = await this.prismaService.deployment.findMany({
       where: { bundleId },
@@ -373,6 +395,33 @@ export class InfrastructureProcessor extends WorkerHost {
         `DeploymentBundle ${bundleId} has no usable per-service images`,
         ErrorCodes.DEPLOYMENT_IMAGE_NOT_FOUND,
       );
+    }
+
+    // Phase F: this bundle may cover only the pushed repo's services, but App
+    // Platform deploys the whole spec atomically. Backfill the env's OTHER services
+    // with each one's most recent SUCCESS image so they keep running. Services with
+    // no prior image stay absent (the caller drops them from the spec until built).
+    const others = await this.prismaService.service.findMany({
+      where: {
+        environmentId,
+        deletedAt: null,
+        name: { notIn: Object.keys(serviceImages) },
+      },
+      select: {
+        name: true,
+        deployments: {
+          where: { status: DeploymentStatus.SUCCESS, imageUri: { not: null } },
+          orderBy: { createdAt: 'desc' },
+          take: 1,
+          select: { imageUri: true },
+        },
+      },
+    });
+    for (const service of others) {
+      const lastImage = service.deployments[0]?.imageUri;
+      if (lastImage) {
+        serviceImages[service.name] = lastImage;
+      }
     }
 
     return serviceImages;

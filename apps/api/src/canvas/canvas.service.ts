@@ -18,15 +18,23 @@ import { Role } from '@prisma/client';
 
 export interface CanvasNode {
   id: string;
-  type: 'service' | 'database' | 'redis' | 'storage';
+  type: 'service' | 'database' | 'redis' | 'storage' | 'repository';
   position: { x: number; y: number };
   data: {
     label: string;
     environmentId: string;
+    // Repository-node fields (Phase F): one node per connected repo.
+    repoFullName?: string;
+    repoBranch?: string;
+    webhookStatus?: 'active' | 'missing';
+    isPrimary?: boolean;
     // Set on `service`-type nodes (Phase 1+). DB/redis/storage child nodes leave this empty.
     serviceId?: string;
     serviceKind?: 'SERVICE' | 'WORKER' | 'JOB' | 'STATIC_SITE';
     serviceName?: string;
+    // Phase F: which connected repo this service builds from (multi-repo provenance).
+    repositoryId?: string | null;
+    repoName?: string;
     sourceDir?: string;
     routePath?: string | null;
     healthcheckPath?: string | null;
@@ -62,6 +70,12 @@ export interface CanvasEdge {
   injectedVars?: string[];
   /** Short edge label, e.g. "DATABASE_URL" or "DATABASE_URL +2". */
   label?: string;
+  /**
+   * 'binding' (default) = a persisted Connection row (resource/service → service,
+   * deletable). 'repo' = a derived repository → service provenance edge (Phase F,
+   * not a Connection; the UI renders it dashed and non-deletable).
+   */
+  kind?: 'binding' | 'repo';
 }
 
 export interface CanvasState {
@@ -83,6 +97,9 @@ export interface AutoSetupResult {
 const SERVICE_BASE = { x: 400, y: 200 };
 const SERVICE_X_STEP = 320;
 const RESOURCE_FALLBACK_OFFSET = { dx: 320, dy: 200, dyStep: 140 } as const;
+// Repository nodes (Phase F) sit in a fixed column to the left of services.
+const REPO_COLUMN_X = -40;
+const REPO_ROW_STEP = 170;
 
 function isCanvasPosition(value: unknown): value is { x: number; y: number } {
   return (
@@ -122,7 +139,10 @@ export class CanvasService {
       select: {
         id: true,
         name: true,
-        repository: { select: { id: true } },
+        repositories: {
+          select: { id: true, fullName: true, branch: true, webhookId: true },
+          orderBy: { createdAt: 'asc' },
+        },
         environments: {
           where: { deletedAt: null },
           orderBy: { createdAt: 'asc' },
@@ -164,6 +184,29 @@ export class CanvasService {
 
     const nodes: CanvasNode[] = [];
     const edges: CanvasEdge[] = [];
+    // Phase F: map repo id → "owner/name" so service nodes show their provenance.
+    const repoNameById = new Map(project.repositories.map((repo) => [repo.id, repo.fullName]));
+    const repoIds = new Set(project.repositories.map((repo) => repo.id));
+
+    // Phase F: one repository node per connected repo, in a column to the left of
+    // the services. Edges from a repo to each service it builds are added in the
+    // service loop below. These are derived (not Connection rows) — fixed-position
+    // and non-deletable on the canvas.
+    project.repositories.forEach((repo, index) => {
+      nodes.push({
+        id: repo.id,
+        type: 'repository',
+        position: { x: REPO_COLUMN_X, y: SERVICE_BASE.y + index * REPO_ROW_STEP },
+        data: {
+          label: repo.fullName.split('/').pop() ?? repo.fullName,
+          environmentId: '',
+          repoFullName: repo.fullName,
+          repoBranch: repo.branch,
+          webhookStatus: repo.webhookId ? 'active' : 'missing',
+          isPrimary: index === 0,
+        },
+      });
+    });
 
     for (const env of project.environments) {
       const region = env.doAccount.region;
@@ -195,6 +238,10 @@ export class CanvasService {
             serviceId: service.id,
             serviceKind: service.kind,
             serviceName: service.name,
+            repositoryId: service.repositoryId,
+            repoName: service.repositoryId
+              ? repoNameById.get(service.repositoryId)
+              : undefined,
             sourceDir: service.sourceDir,
             routePath: service.routePath,
             healthcheckPath: service.healthcheckPath,
@@ -211,6 +258,16 @@ export class CanvasService {
             lastDeployTime: latestDeployment?.updatedAt?.toISOString(),
           },
         });
+
+        // Phase F: provenance edge from the owning repo node to this service.
+        if (service.repositoryId && repoIds.has(service.repositoryId)) {
+          edges.push({
+            id: `repo:${service.repositoryId}:${service.id}`,
+            source: service.repositoryId,
+            target: service.id,
+            kind: 'repo',
+          });
+        }
       });
 
       // Resource nodes (managed Postgres / Redis / Spaces bucket) from Resource rows.
@@ -252,7 +309,7 @@ export class CanvasService {
     return {
       projectId: project.id,
       projectName: project.name,
-      hasConnectedRepo: !!project.repository,
+      hasConnectedRepo: project.repositories.length > 0,
       nodes,
       edges,
     };

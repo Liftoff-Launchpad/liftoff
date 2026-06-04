@@ -52,6 +52,7 @@ describe('EnvironmentsService', () => {
     },
     repository: {
       findUnique: jest.fn(),
+      findFirst: jest.fn(),
     },
   };
 
@@ -91,7 +92,7 @@ describe('EnvironmentsService', () => {
       doToken: 'encrypted-do-token',
     });
     prismaServiceMock.project.findFirst.mockResolvedValue({
-      repository: null,
+      repositories: [],
       user: {
         githubToken: null,
       },
@@ -183,9 +184,7 @@ describe('EnvironmentsService', () => {
       doToken: 'encrypted-do-token',
     });
     prismaServiceMock.project.findFirst.mockResolvedValue({
-      repository: {
-        fullName: 'liftoff/my-app',
-      },
+      repositories: [{ fullName: 'liftoff/my-app' }],
       user: {
         githubToken: 'encrypted-github-token',
       },
@@ -228,9 +227,7 @@ describe('EnvironmentsService', () => {
       doToken: 'encrypted-do-token',
     });
     prismaServiceMock.project.findFirst.mockResolvedValue({
-      repository: {
-        fullName: 'liftoff/my-app',
-      },
+      repositories: [{ fullName: 'liftoff/my-app' }],
       user: {
         githubToken: 'encrypted-github-token',
       },

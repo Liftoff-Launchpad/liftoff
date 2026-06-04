@@ -84,7 +84,7 @@ export class RepositoriesController {
   }
 
   /**
-   * Disconnects the currently connected repository from a project.
+   * Disconnects the project's primary repository (single-repo back-compat).
    */
   @Delete()
   @HttpCode(HttpStatus.NO_CONTENT)
@@ -93,5 +93,53 @@ export class RepositoriesController {
     @CurrentUser() user: User,
   ): Promise<void> {
     await this.repositoriesService.disconnect(projectId, user.id);
+  }
+}
+
+/**
+ * Phase F multi-repo endpoints: a project may link many repositories, each
+ * contributing services to its environments' Apps.
+ */
+@Controller('projects/:projectId/repositories')
+@UseGuards(JwtAuthGuard)
+@ApiBearerAuth()
+@ApiTags('Repositories')
+export class ProjectRepositoriesController {
+  public constructor(private readonly repositoriesService: RepositoriesService) {}
+
+  /**
+   * Lists every repository linked to the project (oldest = primary first).
+   */
+  @Get()
+  public findAll(
+    @Param('projectId') projectId: string,
+    @CurrentUser() user: User,
+  ): Promise<ConnectedRepository[]> {
+    return this.repositoriesService.findAllByProject(projectId, user.id);
+  }
+
+  /**
+   * Links an additional GitHub repository to the project.
+   */
+  @Post()
+  public connect(
+    @Param('projectId') projectId: string,
+    @CurrentUser() user: User,
+    @Body() dto: ConnectRepositoryDto,
+  ): Promise<ConnectedRepository> {
+    return this.repositoriesService.connect(projectId, user.id, dto);
+  }
+
+  /**
+   * Disconnects one specific repository by id.
+   */
+  @Delete(':repositoryId')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  public async remove(
+    @Param('projectId') projectId: string,
+    @Param('repositoryId') repositoryId: string,
+    @CurrentUser() user: User,
+  ): Promise<void> {
+    await this.repositoriesService.disconnect(projectId, user.id, repositoryId);
   }
 }

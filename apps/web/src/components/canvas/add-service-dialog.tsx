@@ -24,6 +24,7 @@ import {
 import { Spinner } from '@/components/ui/spinner';
 import { toast } from '@/components/ui/use-toast';
 import { useCreateService } from '@/hooks/queries/use-services';
+import { useConnectedRepos } from '@/hooks/queries/use-repositories';
 
 const buildStrategyOptions = ['AUTO', 'DOCKERFILE', 'NIXPACKS'] as const;
 const instanceSizeOptions = [
@@ -54,6 +55,7 @@ const schema = z.object({
   command: z.string().default(''),
   jobKind: z.enum(jobKindOptions).default('post_deploy'),
   jobSchedule: z.string().default(''),
+  repositoryId: z.string().default(''),
 });
 
 type FormValues = z.input<typeof schema>;
@@ -81,6 +83,10 @@ export function AddServiceDialog({
   projectId,
 }: AddServiceDialogProps) {
   const createServiceMutation = useCreateService(environmentId, projectId);
+  const { data: repositories } = useConnectedRepos(projectId);
+  // Only offer a repo picker when the project links more than one repo; with a
+  // single repo the backend defaults to it.
+  const showRepoPicker = (repositories?.length ?? 0) > 1;
 
   const form = useForm<FormValues>({
     resolver: zodResolver(schema),
@@ -98,6 +104,7 @@ export function AddServiceDialog({
       command: '',
       jobKind: 'post_deploy',
       jobSchedule: '',
+      repositoryId: '',
     },
   });
 
@@ -125,6 +132,8 @@ export function AddServiceDialog({
         ...(values.kind === 'JOB' && values.jobSchedule
           ? { jobSchedule: values.jobSchedule }
           : {}),
+        // Which repo builds this service (multi-repo projects only).
+        ...(values.repositoryId ? { repositoryId: values.repositoryId } : {}),
       });
       toast({
         title: 'Service added',
@@ -185,6 +194,32 @@ export function AddServiceDialog({
                 </SelectContent>
               </Select>
             </div>
+
+            {showRepoPicker && (
+              <div className="space-y-1 col-span-2">
+                <Label>Repository</Label>
+                <Select
+                  value={form.watch('repositoryId')}
+                  onValueChange={(value) =>
+                    form.setValue('repositoryId', value, { shouldValidate: true })
+                  }
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="Primary repository" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {repositories?.map((repo) => (
+                      <SelectItem key={repo.id} value={repo.id}>
+                        {repo.fullName}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">
+                  Which connected repo builds this service. Empty = primary.
+                </p>
+              </div>
+            )}
 
             <div className="space-y-1 col-span-2">
               <Label htmlFor="svc-source">Source folder (within repo)</Label>

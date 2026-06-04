@@ -1,5 +1,12 @@
 # Phase 11 — Visual Pipeline Builder (n8n-style No-Code)
 
+> **⚠️ DEPRECATED / REMOVED.** This standalone "visual pipeline builder" was
+> superseded by the interactive **Canvas** (Resource/Connection graph — see
+> `docs/INTERACTIVE_GRAPH_PLAN.md`) and has been **removed** from the codebase
+> (the `pipeline` API module, frontend cluster, `PipelineGraph` model, and shared
+> pipeline types are all gone). Kept only as a historical record — do not build
+> against it.
+
 ## Overview
 
 Phase 10 gave non-developers a wizard. Phase 11 gives them a canvas. Users drag infrastructure and service nodes onto a board, connect them with edges, and Liftoff compiles the graph into a real Pulumi deployment. No `liftoff.yml`, no terminal, no YAML.

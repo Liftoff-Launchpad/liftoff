@@ -4,12 +4,17 @@ import { type DeploymentStatusType } from '@liftoff/shared';
 
 export interface CanvasNode {
   id: string;
-  type: 'service' | 'database' | 'redis' | 'storage';
+  type: 'service' | 'database' | 'redis' | 'storage' | 'repository';
   position: { x: number; y: number };
   data: {
     label: string;
     environmentId: string;
     serviceName?: string;
+    // Repository-node fields (Phase F).
+    repoFullName?: string;
+    repoBranch?: string;
+    webhookStatus?: 'active' | 'missing';
+    isPrimary?: boolean;
     endpoint?: string;
     imageUri?: string;
     region?: string;
@@ -41,6 +46,8 @@ export interface CanvasEdge {
   injectedVars?: string[];
   /** Short edge label, e.g. "DATABASE_URL" or "DATABASE_URL +2". */
   label?: string;
+  /** 'repo' = derived repository→service provenance edge (non-deletable). */
+  kind?: 'binding' | 'repo';
 }
 
 export interface CanvasState {

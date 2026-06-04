@@ -58,7 +58,7 @@ Tooling: **pnpm 9 + Turborepo + TypeScript strict + Node 20**. Each app/package 
 
 ### 3.2 Module wiring (root → leaves)
 
-`AppModule` imports: `PrismaModule`, `CommonModule`, `DoApiModule`, `QueuesModule`, `EventsModule`, `AuthModule`, `UsersModule`, `ProjectsModule`, `EnvironmentsModule`, `RepositoriesModule`, `DeploymentsModule`, `DOAccountsModule`, `InfrastructureModule`, `MonitoringModule`, `WebhooksModule`, `UploadModule`, `PipelineModule`, **`CanvasModule`** (apps/api/src/app.module.ts:103).
+`AppModule` imports: `PrismaModule`, `CommonModule`, `DoApiModule`, `QueuesModule`, `EventsModule`, `AuthModule`, `UsersModule`, `ProjectsModule`, `EnvironmentsModule`, `RepositoriesModule`, `ServicesModule`, `ResourcesModule`, `ConnectionsModule`, `VariablesModule`, `DeploymentsModule`, `DOAccountsModule`, `InfrastructureModule`, `MonitoringModule`, `WebhooksModule`, `UploadModule`, **`CanvasModule`** (apps/api/src/app.module.ts).
 
 ### 3.3 Feature modules
 
@@ -171,15 +171,6 @@ Tooling: **pnpm 9 + Turborepo + TypeScript strict + Node 20**. Each app/package 
 - `monitoring.service.ts:89` `streamLogs` — WebSocket pump. Called from `EventsGateway` on `start:log-stream` event; uses `DoApiService.getLiveAppLogs` (async generator, polls every 5s, yields only new lines).
 - `monitoring.service.ts:68` `getMetrics` — maps `cpu|memory|bandwidth` to DO's `cpu_percentage|memory_percentage|network_bandwidth` and returns timeseries.
 
-#### Pipeline — `apps/api/src/pipeline/` (legacy visual builder, kept around)
-- `pipeline.controller.ts` — `GET /environments/:eid/pipeline`, `PUT` (save), `POST /validate`, `POST /compile`, `POST /deploy`.
-- `pipeline.service.ts` — CRUD on `PipelineGraph` (nodes/edges/compiledYaml/isValid/validationErrors).
-- `pipeline-compiler.service.ts` — walks the React Flow graph and emits a `LiftoffConfig`:
-  - Node types: `GitHubPushTrigger | ManualTrigger | ScheduleTrigger | DockerBuild | AutoDetectBuild | AppService | PostgresDatabase | SpacesBucket | CustomDomain | EnvVars | Secret`.
-  - Validation: requires at least one `AppService`, edges must flow trigger→build→service.
-  - `compile` resolves the AppService and follows incoming edges to populate runtime/database/storage/env/secrets/domain on the config.
-- **Note:** The current UI primarily uses the newer **Canvas** module below; the pipeline endpoints + types are still exported but the canvas is the active surface.
-
 #### Canvas — `apps/api/src/canvas/` (the **current** UI backend)
 - `canvas.controller.ts` — `POST /projects/:pid/canvas/auto-setup`, `GET /projects/:pid/canvas`, `PATCH /projects/:pid/canvas/layout`.
 - `canvas.service.ts:97` `getCanvas` — assembles `CanvasState = { projectId, projectName, hasConnectedRepo, nodes[], edges[] }`:
@@ -236,8 +227,9 @@ User                                       RefreshToken
  │        │    └─ DeploymentLog (level, message, source, timestamp)
  │        ├─ PulumiStack (1:1; stackName, stateSpacesKey, outputs Json, lastUpdated)
  │        ├─ InfrastructureResource[] (resourceType, doResourceId, doRegion, tags)
- │        ├─ Alert[]
- │        └─ PipelineGraph (1:1; nodes Json, edges Json, compiledYaml, isValid)
+ │        ├─ Resource[] (graph nodes: POSTGRES|REDIS|SPACES_BUCKET)
+ │        ├─ Connection[] (graph edges: RESOURCE_BINDING | SERVICE_LINK)
+ │        └─ Alert[]
 ```
 
 Conventions: `snake_case` DB columns via `@map()`, `camelCase` TS. Soft-delete via `deletedAt DateTime?`. CUIDs for ids.
@@ -309,8 +301,6 @@ The "Railway-style" interactive surface lives in **`project-canvas.tsx`**:
   - `drawer-settings-tab.tsx` — instance size, domains, etc
   - `drawer-deployments-tab.tsx` — list of deployments for the node's environment
 
-The older **pipeline builder** at `apps/web/src/components/pipeline/` still exists (node palette, custom nodes, YAML preview panel) but isn't the primary surface — the canvas above replaced it.
-
 ### 4.4 Hooks (TanStack Query) — `apps/web/src/hooks/queries/`
 
 | Hook file | Queries / mutations |
@@ -320,8 +310,9 @@ The older **pipeline builder** at `apps/web/src/components/pipeline/` still exis
 | `use-environments.ts` | `useEnvironments`, `useEnvironment`, `useCreate/Update/DeleteEnvironment`, `useUpdateConfig`, `useValidateConfig` |
 | `use-deployments.ts` | `useDeployments`, `useDeployment`, `useDeploymentLogs`, `useTriggerDeployment`, `useRollbackDeployment`, `useCancelDeployment` |
 | `use-do-accounts.ts` | `useDoAccounts`, `useCreateDoAccount`, `useValidateDoAccount`, `useDeleteDoAccount` |
-| `use-repositories.ts` | `useAvailableRepos`, `useConnectedRepo`, `useConnectRepo`, `useDisconnectRepo` |
-| `use-pipeline.ts` | `usePipelineGraph`, `useSave/Validate/Compile/DeployPipeline` |
+| `use-repositories.ts` | `useAvailableRepos`, `useConnectedRepo` (primary), `useConnectedRepos` (multi-repo list), `useConnectRepo`, `useDisconnectRepo`, `useDisconnectRepoById` |
+| `use-connections.ts` | `useCreateConnection`, `useUpdateConnection`, `useDeleteConnection`, `usePreviewConnection` |
+| `use-resources.ts` | `useResources`, `useCreateResource`, `useUpdateResource`, `useDeleteResource` |
 | `use-public-deployment.ts` | Public status fetch for share pages |
 
 `apps/web/src/hooks/use-auth-rehydration.ts` — on dashboard mount, hits `POST /auth/refresh` then `GET /users/me` to repopulate the Zustand store after a page reload.
@@ -347,14 +338,14 @@ All exports from `packages/shared/src/index.ts`:
 |---|---|
 | `schemas/liftoff-yml.schema.ts` | `LiftoffConfigSchema`, `LiftoffConfig` type, `parseLiftoffConfig`, `safeParseLiftoffConfig`. Defines `service`, `runtime`, `build` (strategy: `auto|dockerfile|nixpacks`), `database`, `storage`, `healthcheck`, `domain`, `env`, `secrets`. Region enum: 11 DO regions. Instance sizes: 7 DO App Platform slugs. |
 | `schemas/pagination.schema.ts` | `PaginationQuerySchema` (page≥1, limit 1–100, default 20), `paginate({page, limit}) → {skip, take}`. |
-| `constants/error-codes.ts` | `ErrorCodes` enum (~40 codes: AUTH_*, USER_*, DO_ACCOUNT_*, PROJECT_*, ENVIRONMENT_*, REPOSITORY_*, CONFIG_*, DEPLOYMENT_*, PULUMI_*, UPLOAD_*, PIPELINE_*, TEMPLATE_*, INTERNAL_ERROR, VALIDATION_ERROR, TOO_MANY_REQUESTS, NOT_FOUND). Use these — don't string-literal. |
+| `constants/error-codes.ts` | `ErrorCodes` enum (AUTH_*, USER_*, DO_ACCOUNT_*, PROJECT_*, ENVIRONMENT_*, REPOSITORY_*, CONFIG_*, DEPLOYMENT_*, PULUMI_*, UPLOAD_*, TEMPLATE_*, INTERNAL_ERROR, VALIDATION_ERROR, TOO_MANY_REQUESTS, NOT_FOUND). Use these — don't string-literal. |
 | `constants/deployment-status.ts` | `DeploymentStatus` enum, `TERMINAL_STATUSES`, `ACTIVE_STATUSES`, `VALID_TRANSITIONS` (state machine), plus `DEPLOYMENT_STATUS_LABELS` / `_STEP` for Simple Mode UI. |
 | `constants/websocket-events.ts` | `WsEvents` enum + `WsDeploymentStatusPayload`, `WsDeploymentLogPayload`, `WsDeploymentCompletePayload`, `WsInfraProgressPayload`. |
 | `constants/deploy-secrets.ts` | `LIFTOFF_DEPLOY_SECRET_NAME`, `DIGITALOCEAN_ACCESS_TOKEN_SECRET_NAME`, `resolveEnvironmentDeploySecretName(envId)` (currently returns the constant — placeholder for per-env in the future). |
 | `constants/limits.ts`, `roles.ts`, `wizard-defaults.ts`, `templates.ts` | App-type defaults, size tiers, starter templates (`nextjs-blog`, `portfolio`, `express-api`, `django-webapp`, `laravel-app`, `static-html` — all stored in DO Spaces under `liftoff-templates/`). |
 | `dockerfile-templates/` | `getDockerfileTemplate(appType)` returns a Dockerfile string for `nextjs`/`django`/`laravel`/`express`. Used by `UploadService` when the user's zip has no Dockerfile. |
 | `types/deployment.ts` | `DeploymentDto`, `DeploymentLogDto`. |
-| `types/pipeline.ts` | `PipelineNode`, `PipelineEdge`, `PipelineValidationError`, `PipelineGraphDto`, `CompilePipelineResult`. |
+| `bindings/binding-templates.ts` | `RESOURCE_BINDING_TEMPLATES`, `resolveResourceBindingVars`, `BindingSpec`, `ResourceSpec`, `SERVICE_LINK_URL_TOKEN` — the interactive-graph wiring engine (Phase B). |
 | `types/project.ts`, `environment.ts`, `repository.ts`, `user.ts`, `do-account.ts` | Public DTOs. |
 
 ---
@@ -486,9 +477,8 @@ Web: `NEXT_PUBLIC_API_URL`, `NEXT_PUBLIC_WS_URL`.
 - **No AWS.** "AWS_*" env vars in `PulumiRunnerService` are S3-compatible creds pointing at DO Spaces. The `digitalocean.Provider` is the only thing that talks to DO's API.
 - **`liftoffDeploySecret` is per-environment** in the DB but `LIFTOFF_DEPLOY_SECRET` Actions secret is **a single name** (`resolveEnvironmentDeploySecretName` currently returns the constant). One repo currently maps to one connected environment for the secret; revisit if multi-env-per-repo becomes a real feature.
 - **Pulumi stack name** is `organization/{projectId}/{environmentName}`. Don't change the prefix — `PulumiRunnerService.extractProjectNameFromStackName` enforces it.
-- **Repository:Project is 1:1** (`Repository.projectId @unique`). Multiple branches → multiple environments under the same repo.
+- **Repository:Project is N:1** (Phase F — `@unique` dropped, `Project.repositories[]`). A project links many repos; `Service.repositoryId` says which repo builds each service; a null `repositoryId` belongs to the project's primary (oldest) repo. A push only deploys the pushed repo's services.
 - **`Environment.canvasPosition` is a `Json` field** (not separate `x`/`y` columns). `CanvasService.saveLayout` writes `{x, y}` objects there. Child nodes (`db-…`, `redis-…`, `storage-…`) are *derived* from Pulumi outputs and don't have their own DB row.
-- **`Pipeline*` is the legacy visual builder**; the active surface is `Canvas*`. Both backends are wired in `app.module.ts`. Don't delete the pipeline module without checking — at least `node-definitions.ts`, `pipeline-canvas.tsx`, `yaml-preview-panel.tsx` are still in the frontend tree.
 - **Auto-rollback** kicks in only after a *deploy* failure (image push to App Platform), not after a *provision* failure. See `deployments.processor.ts:504`.
 - **Cron safety net**: `InfrastructureActiveDeploymentCheckerService` fails deployments stuck in active state for >30 min. Anything that takes longer needs to either run async with its own state machine or bump `ACTIVE_DEPLOYMENT_TIMEOUT_MS`.
 - **Rate limiting** is global via `LiftoffThrottlerGuard` (per-user/IP, 100 req/60s default). Per-route overrides via `@Throttle()` are possible but unused.

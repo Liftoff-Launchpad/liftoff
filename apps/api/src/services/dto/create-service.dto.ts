@@ -38,6 +38,15 @@ export class CreateServiceDto {
   public name!: string;
 
   @ApiPropertyOptional({
+    description:
+      'Which connected repository builds this service (Phase F multi-repo). Defaults to the project primary repo.',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  public repositoryId?: string | null;
+
+  @ApiPropertyOptional({
     enum: ['SERVICE', 'WORKER', 'JOB', 'STATIC_SITE'],
     default: 'SERVICE',
   })

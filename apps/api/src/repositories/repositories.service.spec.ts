@@ -31,7 +31,9 @@ describe('RepositoriesService', () => {
   const prismaServiceMock = {
     repository: {
       findUnique: jest.fn(),
+      findFirst: jest.fn(),
       findMany: jest.fn(),
+      count: jest.fn(),
       update: jest.fn(),
       delete: jest.fn(),
     },
@@ -56,8 +58,11 @@ describe('RepositoriesService', () => {
           dockerfilePath: 'Dockerfile',
           buildStrategy: 'AUTO',
           command: null,
+          repositoryId: 'repo-1',
         },
       ]),
+      updateMany: jest.fn(),
+      count: jest.fn().mockResolvedValue(0),
     },
     environmentVariable: {
       findMany: jest.fn().mockResolvedValue([]),
@@ -108,6 +113,11 @@ describe('RepositoriesService', () => {
     prismaServiceMock.dOAccount.findFirst.mockResolvedValue({
       doToken: 'encrypted-do-token',
     });
+    // Phase F defaults: no same-repo duplicate, and the connecting repo is the
+    // project's first/primary (so it adopts the env's unassigned services).
+    prismaServiceMock.repository.findFirst.mockResolvedValue(null);
+    prismaServiceMock.repository.count.mockResolvedValue(1);
+    prismaServiceMock.service.updateMany.mockResolvedValue({ count: 1 });
 
     service = new RepositoriesService(
       prismaServiceMock as unknown as PrismaService,
@@ -382,6 +392,7 @@ describe('RepositoriesService', () => {
         dockerfilePath: './deploy/Dockerfile',
         buildStrategy: 'AUTO',
         command: null,
+        repositoryId: 'repo-1',
       },
     ]);
     prismaServiceMock.user.findFirst.mockResolvedValue({ githubToken: 'encrypted-github-token' });
@@ -469,6 +480,7 @@ describe('RepositoriesService', () => {
         dockerfilePath: 'Dockerfile',
         buildStrategy: 'NIXPACKS',
         command: null,
+        repositoryId: 'repo-1',
       },
     ]);
     prismaServiceMock.user.findFirst.mockResolvedValue({ githubToken: 'encrypted-github-token' });
@@ -545,7 +557,7 @@ describe('RepositoriesService', () => {
 
   it('disconnect removes webhook and repository record', async () => {
     projectsServiceMock.assertProjectRole.mockResolvedValue(Role.ADMIN);
-    prismaServiceMock.repository.findUnique.mockResolvedValue({
+    prismaServiceMock.repository.findFirst.mockResolvedValue({
       id: 'repo-1',
       projectId: 'project-1',
       githubId: 123,
@@ -570,9 +582,84 @@ describe('RepositoriesService', () => {
     );
     expect(prismaServiceMock.repository.delete).toHaveBeenCalledWith({
       where: {
-        projectId: 'project-1',
+        id: 'repo-1',
       },
     });
+  });
+
+  it('disconnect is blocked when the repo still owns services and another repo remains', async () => {
+    projectsServiceMock.assertProjectRole.mockResolvedValue(Role.OWNER);
+    prismaServiceMock.repository.findFirst.mockResolvedValue({
+      id: 'repo-1',
+      projectId: 'project-1',
+      fullName: 'liftoff/my-app',
+      webhookId: 777,
+      createdAt: now,
+    });
+    prismaServiceMock.service.count.mockResolvedValue(2); // repo still owns services
+    prismaServiceMock.repository.count.mockResolvedValue(2); // another repo would adopt them
+
+    await expect(service.disconnect('project-1', 'user-1')).rejects.toThrow(/still build from/);
+    expect(prismaServiceMock.repository.delete).not.toHaveBeenCalled();
+  });
+
+  it('connect allows linking a second repository (no blanket rejection)', async () => {
+    projectsServiceMock.assertProjectRole.mockResolvedValue(Role.OWNER);
+    // A different repo is already connected; connecting another must NOT be rejected.
+    prismaServiceMock.repository.findFirst.mockResolvedValue(null);
+    prismaServiceMock.repository.count.mockResolvedValue(2); // not primary
+    prismaServiceMock.service.findMany.mockResolvedValue([]); // owns nothing yet
+    prismaServiceMock.user.findFirst.mockResolvedValue({ githubToken: 'encrypted-github-token' });
+    githubServiceMock.getRepository.mockResolvedValue({
+      id: 456,
+      name: 'api',
+      fullName: 'liftoff/api',
+      private: false,
+      defaultBranch: 'main',
+      cloneUrl: 'https://github.com/liftoff/api.git',
+      htmlUrl: 'https://github.com/liftoff/api',
+    });
+    prismaServiceMock.project.findFirst.mockResolvedValue({
+      id: 'project-1',
+      name: 'my-app',
+      environments: [
+        {
+          id: 'env-1',
+          name: 'production',
+          gitBranch: 'main',
+          doAccountId: 'do-1',
+          liftoffDeploySecret: null,
+          configParsed: null,
+        },
+      ],
+    });
+    githubServiceMock.createWebhook.mockResolvedValue(556);
+    transactionMock.repository.create.mockResolvedValue({
+      id: 'repo-2',
+      projectId: 'project-1',
+      githubId: 456,
+      fullName: 'liftoff/api',
+      cloneUrl: 'https://github.com/liftoff/api.git',
+      branch: 'main',
+      webhookId: 556,
+      webhookSecret: 'encrypted-secret',
+      createdAt: now,
+      updatedAt: now,
+    });
+    transactionMock.environment.update.mockResolvedValue(undefined);
+    githubServiceMock.upsertActionsSecret.mockResolvedValue(undefined);
+
+    const result = await service.connect('project-1', 'user-1', {
+      githubRepoId: 456,
+      fullName: 'liftoff/api',
+      branch: 'main',
+    });
+
+    expect(result.fullName).toBe('liftoff/api');
+    // A repo that owns no services yet defers its workflow commit to the next sync.
+    expect(githubServiceMock.commitFile).not.toHaveBeenCalled();
+    // Non-primary repo must NOT adopt the env's unassigned services.
+    expect(prismaServiceMock.service.updateMany).not.toHaveBeenCalled();
   });
 
   it('listAvailable returns repositories from GitHub API', async () => {

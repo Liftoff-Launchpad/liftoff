@@ -101,8 +101,9 @@ export class EnvironmentsService {
     const liftoffDeploySecret = this.encryptionService.encrypt(generatedDeploySecret);
     const defaultConfig = this.buildDefaultEnvironmentConfig();
 
-    const projectRepository = await this.prismaService.repository.findUnique({
+    const projectRepository = await this.prismaService.repository.findFirst({
       where: { projectId },
+      orderBy: { createdAt: 'asc' },
       select: { id: true },
     });
 
@@ -443,7 +444,7 @@ export class EnvironmentsService {
         deletedAt: null,
       },
       select: {
-        repository: {
+        repositories: {
           select: {
             fullName: true,
           },
@@ -456,7 +457,7 @@ export class EnvironmentsService {
       },
     });
 
-    if (!projectRepositoryContext?.repository) {
+    if (!projectRepositoryContext || projectRepositoryContext.repositories.length === 0) {
       return;
     }
 
@@ -472,19 +473,23 @@ export class EnvironmentsService {
     const deploySecretName = resolveEnvironmentDeploySecretName(environmentId);
     const doToken = this.decryptDoToken(encryptedDoToken);
 
+    // Phase F: the deploy secret + DO token must exist on every connected repo so
+    // each repo's workflow can authenticate the build + deploy-complete callback.
     try {
-      await this.githubService.upsertActionsSecret(
-        githubToken,
-        projectRepositoryContext.repository.fullName,
-        deploySecretName,
-        deploySecret,
-      );
-      await this.githubService.upsertActionsSecret(
-        githubToken,
-        projectRepositoryContext.repository.fullName,
-        DIGITALOCEAN_ACCESS_TOKEN_SECRET_NAME,
-        doToken,
-      );
+      for (const repository of projectRepositoryContext.repositories) {
+        await this.githubService.upsertActionsSecret(
+          githubToken,
+          repository.fullName,
+          deploySecretName,
+          deploySecret,
+        );
+        await this.githubService.upsertActionsSecret(
+          githubToken,
+          repository.fullName,
+          DIGITALOCEAN_ACCESS_TOKEN_SECRET_NAME,
+          doToken,
+        );
+      }
     } catch (error) {
       throw this.resolveActionsSecretSyncError(error);
     }
