@@ -106,8 +106,9 @@ changes, re-run the relevant Bicep deployment manually.
 These are required for the app to fully work end-to-end:
 
 1. **GitHub OAuth app** — set the callback URL to
-   `https://liftoff-api.<env-domain>/api/v1/auth/github/callback` and the
-   homepage to the web URL. (Boot succeeds regardless; login needs this.)
+   `https://liftoff-api.<env-domain>/api/auth/github/callback` and the
+   homepage to the web URL. (The OAuth routes are version-neutral, so the path is
+   `/api/auth/...`, not `/api/v1/...`. Boot succeeds regardless; login needs this.)
 2. **GitHub webhooks** — `WEBHOOK_BASE_URL` is set to the API's public URL, so
    webhooks registered after deploy will reach Azure.
 3. **Cross-subdomain auth cookies** — `web` and `api` are on different

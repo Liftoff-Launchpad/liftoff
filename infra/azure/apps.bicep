@@ -128,7 +128,9 @@ resource api 'Microsoft.App/containerApps@2024-03-01' = {
             { name: 'PORT', value: '4000' }
             { name: 'FRONTEND_URL', value: webPublicUrl }
             { name: 'WEBHOOK_BASE_URL', value: apiPublicUrl }
-            { name: 'GITHUB_CALLBACK_URL', value: '${apiPublicUrl}/api/v1/auth/github/callback' }
+            // The GitHub OAuth routes are @Version(VERSION_NEUTRAL) under the global
+            // 'api' prefix, so the real callback path is /api/auth/... (no /v1/).
+            { name: 'GITHUB_CALLBACK_URL', value: '${apiPublicUrl}/api/auth/github/callback' }
             { name: 'REDIS_URL', value: redisUrl }
             { name: 'DO_SPACES_BUCKET', value: doSpacesBucket }
             { name: 'DO_SPACES_ENDPOINT', value: doSpacesEndpoint }
