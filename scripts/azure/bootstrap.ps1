@@ -24,7 +24,7 @@ param(
   [string]$Location = 'uaenorth',
   [string]$NamePrefix = 'liftoff',
   [string]$Suffix = '0413',
-  [string]$GitHubRepo = 'munimx/liftoff',
+  [string]$GitHubRepo = 'Liftoff-Launchpad/liftoff',
   [string]$Branch = 'main',
   [string]$EnvFile = "$PSScriptRoot/../../apps/api/.env",
   [switch]$DeployWebsite = $true

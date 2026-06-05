@@ -11,11 +11,11 @@
   No application secrets are pushed to GitHub; those live in Azure Key Vault.
 
 .EXAMPLE
-  ./scripts/azure/setup-github.ps1 -Repo munimx/liftoff
+  ./scripts/azure/setup-github.ps1 -Repo Liftoff-Launchpad/liftoff
 #>
 [CmdletBinding()]
 param(
-  [string]$Repo = 'munimx/liftoff',
+  [string]$Repo = 'Liftoff-Launchpad/liftoff',
   [string]$ResourceGroup = 'liftoff-rg',
   [string]$DeploymentName = 'liftoff-infra'
 )

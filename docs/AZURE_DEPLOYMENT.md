@@ -94,7 +94,7 @@ and `apps.bicep` (API + web + website).
 Wire the repo once (sets non-sensitive Actions *variables* only):
 
 ```powershell
-./scripts/azure/setup-github.ps1 -Repo munimx/liftoff   # needs `gh auth login`
+./scripts/azure/setup-github.ps1 -Repo Liftoff-Launchpad/liftoff   # needs `gh auth login`
 ```
 
 The data services (`liftoff-postgres`, `liftoff-redis`) are intentionally **not**

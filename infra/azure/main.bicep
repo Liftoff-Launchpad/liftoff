@@ -28,7 +28,7 @@ param namePrefix string = 'liftoff'
 param suffix string = '0413'
 
 @description('GitHub repository (owner/name) trusted for OIDC federation.')
-param githubRepo string = 'munimx/liftoff'
+param githubRepo string = 'Liftoff-Launchpad/liftoff'
 
 @description('Git branch allowed to deploy via the federated credential.')
 param githubBranch string = 'main'
