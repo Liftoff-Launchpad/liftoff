@@ -47,6 +47,15 @@ FROM base AS production
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/packages/shared/dist ./packages/shared/dist
 COPY --from=builder /app/packages/shared/package.json ./packages/shared/package.json
+# The API spawns a Pulumi subprocess that ts-node-compiles the stack TypeScript
+# source directly at runtime (see pulumi-runner.service.ts -> resolveStackModulePath,
+# which walks up from cwd looking for packages/pulumi-components/src/stacks/
+# app-platform-stack.ts). Ship that source, or user-infra provisioning throws
+# "Unable to resolve ...app-platform-stack.ts". Its @pulumi/* deps resolve via the
+# pulumi-components node_modules created in the base stage, and @liftoff/shared via
+# packages/shared/dist above.
+COPY --from=builder /app/packages/pulumi-components/src ./packages/pulumi-components/src
+COPY --from=builder /app/packages/pulumi-components/package.json ./packages/pulumi-components/package.json
 COPY --from=builder /app/apps/api/dist ./apps/api/dist
 COPY --from=builder /app/apps/api/node_modules ./apps/api/node_modules
 COPY --from=builder /app/apps/api/package.json ./apps/api/package.json
