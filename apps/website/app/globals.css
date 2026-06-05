@@ -1,0 +1,385 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* Near-black, faintly cool — Linear-style canvas */
+    --background: 240 10% 4%;
+    --foreground: 0 0% 98%;
+    --card: 240 8% 7%;
+    --card-foreground: 0 0% 98%;
+    --muted: 240 6% 12%;
+    --muted-foreground: 240 5% 64%;
+    --border: 240 6% 15%;
+    --input: 240 6% 15%;
+    --ring: 258 90% 66%;
+
+    /* Brand accents */
+    --primary: 258 90% 66%; /* violet */
+    --primary-foreground: 0 0% 100%;
+    --violet: 258 90% 66%;
+    --blue: 211 100% 55%; /* DigitalOcean blue */
+    --cyan: 190 95% 55%;
+    --amber: 28 96% 56%;
+
+    --radius: 0.75rem;
+  }
+
+  * {
+    @apply border-border;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  html {
+    scroll-behavior: smooth;
+    scroll-padding-top: 6rem;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+    font-feature-settings: 'cv11', 'ss01';
+    font-variation-settings: 'opsz' 32;
+    overflow-x: hidden;
+  }
+
+  ::selection {
+    background: hsl(var(--primary) / 0.3);
+    color: hsl(var(--foreground));
+  }
+
+  /* Visible keyboard focus across all interactive elements (WCAG 2.4.7).
+     Uses the --ring token; offset clears rounded button/card edges. */
+  :where(a, button, [tabindex]):focus-visible {
+    outline: 2px solid hsl(var(--ring));
+    outline-offset: 2px;
+    border-radius: 0.5rem;
+  }
+
+  /* Slim, dark scrollbar */
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: hsl(var(--background));
+  }
+  ::-webkit-scrollbar-thumb {
+    background: hsl(240 6% 18%);
+    border-radius: 9999px;
+    border: 2px solid hsl(var(--background));
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: hsl(240 6% 26%);
+  }
+}
+
+@layer components {
+  /* ── Surfaces ───────────────────────────────────────────── */
+  .glass {
+    background: hsl(240 8% 8% / 0.6);
+    border: 1px solid hsl(0 0% 100% / 0.06);
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+  }
+
+  .glass-strong {
+    background: hsl(240 9% 6% / 0.85);
+    border: 1px solid hsl(0 0% 100% / 0.08);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+  }
+
+  .panel {
+    border: 1px solid hsl(0 0% 100% / 0.07);
+    background: linear-gradient(
+      180deg,
+      hsl(240 8% 9% / 0.7),
+      hsl(240 10% 5% / 0.7)
+    );
+    border-radius: var(--radius);
+  }
+
+  /* Card with a soft top highlight + hover lift/glow */
+  .card-surface {
+    position: relative;
+    border: 1px solid hsl(0 0% 100% / 0.07);
+    background: linear-gradient(
+      180deg,
+      hsl(240 8% 9% / 0.8),
+      hsl(240 10% 5% / 0.6)
+    );
+    border-radius: var(--radius);
+    transition:
+      transform 0.4s cubic-bezier(0.16, 1, 0.3, 1),
+      border-color 0.4s ease,
+      background 0.4s ease;
+  }
+  .card-surface::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    padding: 1px;
+    background: linear-gradient(
+      180deg,
+      hsl(0 0% 100% / 0.08),
+      transparent 40%
+    );
+    -webkit-mask:
+      linear-gradient(#fff 0 0) content-box,
+      linear-gradient(#fff 0 0);
+    -webkit-mask-composite: xor;
+    mask-composite: exclude;
+    pointer-events: none;
+  }
+  .card-surface:hover {
+    transform: translateY(-3px);
+    border-color: hsl(var(--primary) / 0.35);
+  }
+
+  /* ── Gradient text ──────────────────────────────────────── */
+  .gradient-text {
+    background: linear-gradient(
+      120deg,
+      hsl(0 0% 100%) 0%,
+      hsl(0 0% 100%) 35%,
+      hsl(var(--violet)) 70%,
+      hsl(var(--blue)) 100%
+    );
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    color: transparent;
+  }
+  .gradient-text-brand {
+    background: linear-gradient(
+      120deg,
+      hsl(var(--violet)),
+      hsl(var(--blue)) 50%,
+      hsl(var(--cyan))
+    );
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    color: transparent;
+  }
+  .text-balance {
+    text-wrap: balance;
+  }
+
+  /* ── Backgrounds ────────────────────────────────────────── */
+  .grid-bg {
+    background-image:
+      linear-gradient(to right, hsl(0 0% 100% / 0.04) 1px, transparent 1px),
+      linear-gradient(to bottom, hsl(0 0% 100% / 0.04) 1px, transparent 1px);
+    background-size: 56px 56px;
+  }
+  .grid-bg-fade {
+    -webkit-mask-image: radial-gradient(
+      ellipse 70% 60% at 50% 0%,
+      #000 40%,
+      transparent 100%
+    );
+    mask-image: radial-gradient(
+      ellipse 70% 60% at 50% 0%,
+      #000 40%,
+      transparent 100%
+    );
+  }
+  .dot-bg {
+    background-image: radial-gradient(
+      hsl(0 0% 100% / 0.08) 1px,
+      transparent 1px
+    );
+    background-size: 22px 22px;
+  }
+
+  /* Radial glow blobs (place absolutely behind content) */
+  .glow {
+    position: absolute;
+    border-radius: 9999px;
+    filter: blur(80px);
+    pointer-events: none;
+    z-index: 0;
+  }
+  .glow-violet {
+    background: hsl(var(--violet) / 0.28);
+  }
+  .glow-blue {
+    background: hsl(var(--blue) / 0.22);
+  }
+  .glow-cyan {
+    background: hsl(var(--cyan) / 0.18);
+  }
+
+  /* Hairline divider that fades at the edges */
+  .rule {
+    height: 1px;
+    width: 100%;
+    background: linear-gradient(
+      90deg,
+      transparent,
+      hsl(0 0% 100% / 0.12),
+      transparent
+    );
+  }
+
+  /* ── Animated gradient border (wrap any element) ────────── */
+  .border-gradient {
+    position: relative;
+    border-radius: var(--radius);
+    background: hsl(var(--card));
+    z-index: 0;
+  }
+  .border-gradient::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    padding: 1px;
+    background: linear-gradient(
+      130deg,
+      hsl(var(--violet) / 0.8),
+      hsl(var(--blue) / 0.5),
+      hsl(var(--cyan) / 0.6)
+    );
+    background-size: 200% 200%;
+    -webkit-mask:
+      linear-gradient(#fff 0 0) content-box,
+      linear-gradient(#fff 0 0);
+    -webkit-mask-composite: xor;
+    mask-composite: exclude;
+    animation: border-flow 6s ease infinite;
+    z-index: -1;
+  }
+
+  /* ── Pills / badges ─────────────────────────────────────── */
+  .pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    border-radius: 9999px;
+    border: 1px solid hsl(0 0% 100% / 0.1);
+    background: hsl(240 8% 10% / 0.6);
+    padding: 0.3rem 0.8rem;
+    font-size: 0.8125rem;
+    color: hsl(var(--muted-foreground));
+    backdrop-filter: blur(8px);
+  }
+
+  /* ── Marquee ────────────────────────────────────────────── */
+  .marquee-mask {
+    -webkit-mask-image: linear-gradient(
+      90deg,
+      transparent,
+      #000 12%,
+      #000 88%,
+      transparent
+    );
+    mask-image: linear-gradient(
+      90deg,
+      transparent,
+      #000 12%,
+      #000 88%,
+      transparent
+    );
+  }
+
+  /* ── Shimmer sweep (for skeleton / highlight bars) ──────── */
+  .shimmer-track {
+    position: relative;
+    overflow: hidden;
+  }
+  .shimmer-track::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    transform: translateX(-100%);
+    background: linear-gradient(
+      90deg,
+      transparent,
+      hsl(0 0% 100% / 0.08),
+      transparent
+    );
+    animation: shimmer 2.2s ease-in-out infinite;
+  }
+
+  /* ── Buttons ────────────────────────────────────────────── */
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    white-space: nowrap;
+    border-radius: 0.625rem;
+    font-size: 0.9375rem;
+    font-weight: 500;
+    transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+    cursor: pointer;
+  }
+  .btn-primary {
+    background: linear-gradient(180deg, hsl(258 92% 70%), hsl(258 90% 60%));
+    color: hsl(var(--primary-foreground));
+    box-shadow:
+      0 1px 0 0 hsl(0 0% 100% / 0.18) inset,
+      0 8px 30px -8px hsl(var(--primary) / 0.7);
+  }
+  .btn-primary:hover {
+    box-shadow:
+      0 1px 0 0 hsl(0 0% 100% / 0.25) inset,
+      0 12px 40px -8px hsl(var(--primary) / 0.85);
+    transform: translateY(-1px);
+  }
+  .btn-secondary {
+    background: hsl(0 0% 100% / 0.04);
+    color: hsl(var(--foreground));
+    border: 1px solid hsl(0 0% 100% / 0.1);
+  }
+  .btn-secondary:hover {
+    background: hsl(0 0% 100% / 0.08);
+    border-color: hsl(0 0% 100% / 0.18);
+  }
+  .btn:focus-visible {
+    outline: 2px solid hsl(var(--ring));
+    outline-offset: 2px;
+  }
+}
+
+@layer utilities {
+  /* Scroll-reveal: starts hidden, .is-visible animates in.
+     Honors reduced-motion by showing immediately. */
+  .reveal {
+    opacity: 0;
+    transform: translateY(20px);
+    transition:
+      opacity 0.8s cubic-bezier(0.16, 1, 0.3, 1),
+      transform 0.8s cubic-bezier(0.16, 1, 0.3, 1);
+    will-change: opacity, transform;
+  }
+  .reveal.is-visible {
+    opacity: 1;
+    transform: none;
+  }
+
+  .glow-ring {
+    box-shadow: 0 0 0 1px hsl(var(--primary) / 0.35),
+      0 0 40px -8px hsl(var(--primary) / 0.5);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+  .reveal {
+    opacity: 1;
+    transform: none;
+  }
+}
