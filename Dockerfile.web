@@ -28,6 +28,13 @@ CMD ["pnpm", "dev"]
 # Builder Stage
 # ------------------------------------------------------------------------------
 FROM base AS builder
+# NEXT_PUBLIC_* values are inlined into the client bundle at build time, so they
+# must be present as env vars before `next build` runs. The CI pipeline passes the
+# deployed API origin via --build-arg.
+ARG NEXT_PUBLIC_API_URL
+ARG NEXT_PUBLIC_WS_URL
+ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
+ENV NEXT_PUBLIC_WS_URL=$NEXT_PUBLIC_WS_URL
 COPY packages/ packages/
 COPY apps/web/ apps/web/
 RUN pnpm --filter shared build
