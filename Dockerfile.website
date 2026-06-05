@@ -28,6 +28,14 @@ CMD ["pnpm", "dev"]
 # Builder Stage
 # ------------------------------------------------------------------------------
 FROM base AS builder
+# NEXT_PUBLIC_* values are inlined into the client bundle at build time. The CI
+# pipeline passes the deployed app/API origins via --build-arg.
+ARG NEXT_PUBLIC_API_URL
+ARG NEXT_PUBLIC_APP_URL
+ARG NEXT_PUBLIC_GITHUB_URL
+ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
+ENV NEXT_PUBLIC_APP_URL=$NEXT_PUBLIC_APP_URL
+ENV NEXT_PUBLIC_GITHUB_URL=$NEXT_PUBLIC_GITHUB_URL
 COPY packages/config/ packages/config/
 COPY apps/website/ apps/website/
 RUN pnpm --filter website build
