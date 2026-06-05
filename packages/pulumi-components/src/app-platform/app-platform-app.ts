@@ -10,19 +10,40 @@ type DocrImageReference = {
 };
 
 export interface AppPlatformDatabaseArgs {
+  /** Unique name within the App's databases[] block. */
+  name: string;
   clusterName: pulumi.Input<string>;
-  dbName: pulumi.Input<string>;
-  dbUser: pulumi.Input<string>;
+  /** App Platform engine code. PG for Postgres, REDIS for Redis/Valkey. */
+  engine: 'PG' | 'REDIS';
+  dbName?: pulumi.Input<string>;
+  dbUser?: pulumi.Input<string>;
 }
 
 /**
- * One App Platform component within the env's single DO `App`. Phase 1 ships
- * `kind: 'service'`; workers/jobs/static_sites are reserved for Phase 5.
+ * An env var injected into a service from a graph edge (Phase B). The value is a
+ * live `pulumi.Input` resolved from the source resource's outputs (e.g. a managed
+ * DB connection uri), so secrets never pass through the API/DB.
+ */
+export interface AppPlatformBindingEnv {
+  key: string;
+  value: pulumi.Input<string>;
+  /** Emit as App Platform SECRET (encrypted) vs GENERAL. */
+  secret: boolean;
+}
+
+/**
+ * One App Platform component within the env's single DO `App`.
+ *   - `service`     → `services[]`     (HTTP, public route)
+ *   - `worker`      → `workers[]`      (background, no port/route)
+ *   - `job`         → `jobs[]`         (deploy-lifecycle hook; see `jobKind`)
+ *   - `static_site` → `services[]`     (served as a lightweight container — DO's
+ *     native `static_sites[]` only accepts a git source, not a DOCR image, so an
+ *     image-built static site is deployed as a container service)
  */
 export interface AppPlatformServiceSpec {
   /** Unique within the env's App spec; becomes the App Platform component name. */
   name: string;
-  /** Component type. Phase 1: must be 'service'. */
+  /** Component type — dispatched to the matching App spec array (see interface doc). */
   kind: 'service' | 'worker' | 'job' | 'static_site';
   /** Fully-qualified DOCR image URI to deploy. */
   imageUri: string;
@@ -38,8 +59,28 @@ export interface AppPlatformServiceSpec {
    * Platform `SECRET` type (DO encrypts on its side); `kind: 'plain'` → `GENERAL` type.
    */
   variables: AppPlatformVariable[];
+  /**
+   * Env vars auto-injected from graph edges (resource bindings / service links).
+   * Lower precedence than `variables` — a user var of the same key wins.
+   */
+  bindings?: AppPlatformBindingEnv[];
   /** Optional HTTP healthcheck path; if omitted, App Platform falls back to TCP probe. */
   healthCheckPath?: string;
+  /**
+   * Start command override. Set as App Platform `run_command` so it works for
+   * both Dockerfile and Nixpacks images. Essential for services whose image has
+   * no default start (e.g. a Node repo with no `start` script).
+   */
+  command?: string;
+  /**
+   * JOB only: when the job runs in the deploy lifecycle. App Platform supports
+   * PRE_DEPLOY / POST_DEPLOY / FAILED_DEPLOY. `cron` has no native App Platform
+   * scheduler — it's treated as POST_DEPLOY here and carried in liftoff.yml for
+   * export; true scheduled execution would need a worker-based scheduler.
+   */
+  jobKind?: 'cron' | 'pre_deploy' | 'post_deploy' | 'failed_deploy';
+  /** JOB only: cron expression (export/record only; not an App Platform primitive). */
+  schedule?: string;
 }
 
 /**
@@ -61,7 +102,11 @@ export interface AppPlatformAppArgs {
   region: string;
   /** One spec entry per Service row in the env. Phase 1 typically length 1. */
   services: AppPlatformServiceSpec[];
-  database?: AppPlatformDatabaseArgs;
+  /**
+   * Managed databases (Postgres/Redis) to attach to the App. Attaching them adds
+   * the App as a trusted source on the cluster firewall so services can connect.
+   */
+  databases?: AppPlatformDatabaseArgs[];
   provider: digitalocean.Provider;
 }
 
@@ -89,8 +134,23 @@ export class AppPlatformApp extends pulumi.ComponentResource {
     const tags = createLiftoffTags(args.projectName, args.environmentName);
     const appName = truncateKebabCase(toKebabCase(args.appName), 32);
 
-    const serviceEntries = args.services.map((service) =>
+    // Partition components by kind into the matching App spec arrays. Background
+    // workers → workers[]; deploy-lifecycle jobs → jobs[]; HTTP services and
+    // image-built static sites → services[] (DO static_sites[] need a git source,
+    // not a DOCR image, so an image-built static site runs as a container service).
+    const workerSpecs = args.services.filter((service) => service.kind === 'worker');
+    const jobSpecs = args.services.filter((service) => service.kind === 'job');
+    const serviceSpecs = args.services.filter(
+      (service) => service.kind !== 'worker' && service.kind !== 'job',
+    );
+    const serviceEntries = serviceSpecs.map((service) =>
       this.toServiceSpec(service, args.projectName, args.environmentName),
+    );
+    const workerEntries = workerSpecs.map((service) =>
+      this.toWorkerSpec(service, args.projectName, args.environmentName),
+    );
+    const jobEntries = jobSpecs.map((service) =>
+      this.toJobSpec(service, args.projectName, args.environmentName),
     );
 
     const app = new digitalocean.App(
@@ -99,19 +159,19 @@ export class AppPlatformApp extends pulumi.ComponentResource {
         spec: {
           name: appName,
           region: args.region,
-          services: serviceEntries,
-          ...(args.database
+          ...(serviceEntries.length > 0 ? { services: serviceEntries } : {}),
+          ...(workerEntries.length > 0 ? { workers: workerEntries } : {}),
+          ...(jobEntries.length > 0 ? { jobs: jobEntries } : {}),
+          ...(args.databases && args.databases.length > 0
             ? {
-                databases: [
-                  {
-                    name: 'database',
-                    clusterName: args.database.clusterName,
-                    dbName: args.database.dbName,
-                    dbUser: args.database.dbUser,
-                    engine: 'PG',
-                    production: true,
-                  },
-                ],
+                databases: args.databases.map((database) => ({
+                  name: database.name,
+                  clusterName: database.clusterName,
+                  engine: database.engine,
+                  production: true,
+                  ...(database.dbName ? { dbName: database.dbName } : {}),
+                  ...(database.dbUser ? { dbUser: database.dbUser } : {}),
+                })),
               }
             : {}),
         },
@@ -159,12 +219,106 @@ export class AppPlatformApp extends pulumi.ComponentResource {
       httpPort: service.httpPort,
       instanceCount: service.instanceCount,
       instanceSizeSlug: service.instanceSizeSlug,
+      ...(service.command ? { runCommand: service.command } : {}),
       ...(service.healthCheckPath
         ? { healthCheck: { httpPath: service.healthCheckPath } }
         : {}),
       ...(service.routes.length > 0 ? { routes: service.routes } : {}),
-      envs: this.buildServiceEnvs(service.variables, projectName, environmentName),
+      envs: this.buildServiceEnvs(
+        service.variables,
+        service.bindings ?? [],
+        projectName,
+        environmentName,
+      ),
     };
+  }
+
+  /**
+   * Maps a worker-kind spec to an App Platform `workers[]` entry — a long-running
+   * non-HTTP process. No port / routes / healthcheck; a runCommand is typical.
+   */
+  private toWorkerSpec(
+    service: AppPlatformServiceSpec,
+    projectName: string,
+    environmentName: string,
+  ): digitalocean.types.input.AppSpecWorker {
+    const parsedImage = this.parseDocrImageUri(service.imageUri);
+    const componentName = truncateKebabCase(
+      toKebabCase(`${service.name}-${environmentName}`),
+      32,
+    );
+
+    return {
+      name: componentName,
+      image: {
+        registry: parsedImage.registry,
+        registryType: 'DOCR',
+        repository: parsedImage.repository,
+        tag: parsedImage.tag,
+      },
+      instanceCount: service.instanceCount,
+      instanceSizeSlug: service.instanceSizeSlug,
+      ...(service.command ? { runCommand: service.command } : {}),
+      envs: this.buildServiceEnvs(
+        service.variables,
+        service.bindings ?? [],
+        projectName,
+        environmentName,
+      ),
+    };
+  }
+
+  /**
+   * Maps a job-kind spec to an App Platform `jobs[]` entry — a run-to-completion
+   * task tied to the deploy lifecycle. App Platform job `kind` is one of
+   * PRE_DEPLOY / POST_DEPLOY / FAILED_DEPLOY (there is no native cron); a Liftoff
+   * `cron` jobKind degrades to POST_DEPLOY.
+   */
+  private toJobSpec(
+    service: AppPlatformServiceSpec,
+    projectName: string,
+    environmentName: string,
+  ): digitalocean.types.input.AppSpecJob {
+    const parsedImage = this.parseDocrImageUri(service.imageUri);
+    const componentName = truncateKebabCase(
+      toKebabCase(`${service.name}-${environmentName}`),
+      32,
+    );
+
+    return {
+      name: componentName,
+      kind: this.mapJobKind(service.jobKind),
+      image: {
+        registry: parsedImage.registry,
+        registryType: 'DOCR',
+        repository: parsedImage.repository,
+        tag: parsedImage.tag,
+      },
+      instanceCount: service.instanceCount,
+      instanceSizeSlug: service.instanceSizeSlug,
+      ...(service.command ? { runCommand: service.command } : {}),
+      envs: this.buildServiceEnvs(
+        service.variables,
+        service.bindings ?? [],
+        projectName,
+        environmentName,
+      ),
+    };
+  }
+
+  /** Maps a Liftoff jobKind to App Platform's job `kind` enum. */
+  private mapJobKind(jobKind: AppPlatformServiceSpec['jobKind']): string {
+    switch (jobKind) {
+      case 'pre_deploy':
+        return 'PRE_DEPLOY';
+      case 'failed_deploy':
+        return 'FAILED_DEPLOY';
+      // App Platform has no native cron scheduler — a cron job runs post-deploy.
+      case 'cron':
+      case 'post_deploy':
+      default:
+        return 'POST_DEPLOY';
+    }
   }
 
   private parseDocrImageUri(imageUri: string): DocrImageReference {
@@ -188,19 +342,29 @@ export class AppPlatformApp extends pulumi.ComponentResource {
 
   private buildServiceEnvs(
     variables: AppPlatformVariable[],
+    bindings: AppPlatformBindingEnv[],
     projectName: string,
     environmentName: string,
   ): digitalocean.types.input.AppSpecServiceEnv[] {
-    // Liftoff-managed metadata vars — auto-injected so apps can self-identify in
-    // logs/error reporting without hard-coding. User-defined variables of the
-    // same name (rare) override these because the resolver de-dupes on key.
-    const liftoffMeta = new Map<string, digitalocean.types.input.AppSpecServiceEnv>([
+    // Precedence (lowest -> highest): Liftoff metadata < edge bindings < user vault
+    // vars. A Map keyed by env name means later sets win, so a user-set DATABASE_URL
+    // overrides the binding-injected one.
+    const envByKey = new Map<string, digitalocean.types.input.AppSpecServiceEnv>([
       ['LIFTOFF_PROJECT', { key: 'LIFTOFF_PROJECT', value: projectName, scope: 'RUN_TIME', type: 'GENERAL' }],
       ['LIFTOFF_ENVIRONMENT', { key: 'LIFTOFF_ENVIRONMENT', value: environmentName, scope: 'RUN_TIME', type: 'GENERAL' }],
     ]);
 
+    for (const binding of bindings) {
+      envByKey.set(binding.key, {
+        key: binding.key,
+        value: binding.value,
+        scope: 'RUN_TIME',
+        type: binding.secret ? 'SECRET' : 'GENERAL',
+      });
+    }
+
     for (const variable of variables) {
-      liftoffMeta.set(variable.key, {
+      envByKey.set(variable.key, {
         key: variable.key,
         value: variable.value,
         scope: 'RUN_TIME',
@@ -208,6 +372,6 @@ export class AppPlatformApp extends pulumi.ComponentResource {
       });
     }
 
-    return Array.from(liftoffMeta.values());
+    return Array.from(envByKey.values());
   }
 }

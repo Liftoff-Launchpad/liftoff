@@ -4,6 +4,7 @@ import { Globe2, MapPin, Rocket, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { cn } from '@/lib/utils';
+import { CanvasActivity } from '../canvas-activity';
 
 interface ConfigDrawerProps {
   open: boolean;
@@ -14,6 +15,8 @@ interface ConfigDrawerProps {
   repoName?: string;
   region?: string;
   replicas?: number;
+  /** Environment id — drives the real Deployments tab list. */
+  environmentId?: string;
   children: React.ReactNode;
 }
 
@@ -26,6 +29,7 @@ export function ConfigDrawer({
   repoName,
   region,
   replicas = 1,
+  environmentId,
   children,
 }: ConfigDrawerProps) {
   const displayName = nodeLabel ?? 'Node Settings';
@@ -104,17 +108,15 @@ export function ConfigDrawer({
                 </div>
               </div>
 
-              <div className="mt-5 flex min-h-28 items-center justify-center rounded-lg border border-dashed border-border bg-background/35 px-8 text-center">
-                <div>
+              {environmentId ? (
+                <CanvasActivity environmentId={environmentId} />
+              ) : (
+                <div className="mt-5 flex min-h-28 items-center justify-center rounded-lg border border-dashed border-border bg-background/35 px-8 text-center">
                   <p className="text-sm text-muted-foreground">
-                    {hasActiveDeployment ? 'Latest deployment is active for this service.' : 'There is no active deployment for this service.'}
+                    Deploy history will appear here once this environment is set up.
                   </p>
-                  <Button variant="link" className="mt-2 h-auto px-0 text-primary">
-                    <Rocket className="mr-2 h-4 w-4" />
-                    Deploy {repoName ? `the repo ${repoName}` : displayName}
-                  </Button>
                 </div>
-              </div>
+              )}
             </TabsContent>
 
             {children}

@@ -98,6 +98,7 @@ describe('InfrastructureProcessor', () => {
     },
     deployment: {
       update: jest.fn(),
+      updateMany: jest.fn(),
     },
   };
 
@@ -105,9 +106,20 @@ describe('InfrastructureProcessor', () => {
     deployment: {
       findFirst: jest.fn(),
       update: jest.fn(),
+      updateMany: jest.fn(),
+      findMany: jest.fn().mockResolvedValue([]),
+    },
+    deploymentBundle: {
+      update: jest.fn(),
     },
     environment: {
       findFirst: jest.fn(),
+    },
+    service: {
+      findMany: jest.fn().mockResolvedValue([]),
+    },
+    resource: {
+      updateMany: jest.fn(),
     },
     deploymentLog: {
       create: jest.fn(),
@@ -143,6 +155,30 @@ describe('InfrastructureProcessor', () => {
     resolveRuntimeVariablesForService: jest.fn().mockResolvedValue([]),
   };
 
+  const graphCompilerServiceMock = {
+    compile: jest.fn().mockResolvedValue({
+      config: {
+        version: '2.0',
+        services: [
+          {
+            name: 'my-app',
+            type: 'service',
+            runtime: { instance_size: 'apps-s-1vcpu-0.5gb', replicas: 1, port: 3000 },
+            build: { strategy: 'auto', dockerfile_path: 'Dockerfile', context: '.' },
+            routes: [{ path: '/' }],
+            env: {},
+            secrets: [],
+          },
+        ],
+        database: { enabled: false },
+        storage: { enabled: false },
+      },
+      resources: [],
+      bindings: [],
+      resourceIds: [],
+    }),
+  };
+
   beforeEach(() => {
     jest.clearAllMocks();
     processor = new InfrastructureProcessor(
@@ -152,6 +188,7 @@ describe('InfrastructureProcessor', () => {
       pulumiRunnerServiceMock as unknown as PulumiRunnerService,
       eventsGatewayMock as unknown as EventsGateway,
       variablesServiceMock as never,
+      graphCompilerServiceMock as never,
     );
   });
 
@@ -215,16 +252,16 @@ describe('InfrastructureProcessor', () => {
     );
     expect(transactionMock.pulumiStack.upsert).toHaveBeenCalled();
     expect(transactionMock.infrastructureResource.createMany).toHaveBeenCalled();
-    expect(transactionMock.deployment.update).toHaveBeenCalledWith({
-      where: { id: 'deploy-1' },
+    expect(transactionMock.deployment.updateMany).toHaveBeenCalledWith({
+      where: { id: { in: ['deploy-1'] } },
       data: {
         status: DeploymentStatus.DEPLOYING,
         endpoint: 'https://my-app.ondigitalocean.app',
         errorMessage: null,
       },
     });
-    expect(prismaServiceMock.deployment.update).toHaveBeenCalledWith({
-      where: { id: 'deploy-1' },
+    expect(prismaServiceMock.deployment.updateMany).toHaveBeenCalledWith({
+      where: { id: { in: ['deploy-1'] } },
       data: {
         status: DeploymentStatus.SUCCESS,
         endpoint: 'https://my-app.ondigitalocean.app',
@@ -259,8 +296,8 @@ describe('InfrastructureProcessor', () => {
       ),
     ).rejects.toThrow('Pulumi crashed');
 
-    expect(prismaServiceMock.deployment.update).toHaveBeenCalledWith({
-      where: { id: 'deploy-1' },
+    expect(prismaServiceMock.deployment.updateMany).toHaveBeenCalledWith({
+      where: { id: { in: ['deploy-1'] } },
       data: {
         status: DeploymentStatus.FAILED,
         errorMessage: 'Pulumi crashed',

@@ -1,4 +1,4 @@
-import type { LiftoffConfigV2 } from '@liftoff/shared';
+import type { BindingSpec, LiftoffConfigV2, ResourceSpec } from '@liftoff/shared';
 
 export type PulumiLogLevel = 'info' | 'warn' | 'error';
 
@@ -39,6 +39,16 @@ export interface AppPlatformStackArgs {
    * component still injects the auto LIFTOFF_* metadata vars in that case.
    */
   serviceVariables?: Record<string, AppPlatformVariable[]>;
+  /**
+   * Phase B: managed resources to provision (compiled from Resource rows).
+   * Mirrors the field in the Pulumi stack args.
+   */
+  resources?: ResourceSpec[];
+  /**
+   * Phase B: graph edges resolved into auto-injected service env vars. Mirrors
+   * the field in the Pulumi stack args.
+   */
+  bindings?: BindingSpec[];
 }
 
 export interface PulumiStackOutputs {

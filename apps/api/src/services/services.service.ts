@@ -42,8 +42,29 @@ export class ServicesService {
     const existingServiceCount = await this.prismaService.service.count({
       where: { environmentId, deletedAt: null },
     });
-    const resolvedRoutePath = this.resolveRoutePath(dto, existingServiceCount, dto.name);
-    const resolvedRepositoryId = environment.project.repository?.id ?? null;
+    const kind = (dto.kind ?? 'SERVICE') as ServiceKind;
+    // Only HTTP-serving components get a public route. Workers (background) and
+    // jobs (deploy hooks) are non-HTTP; web services and static sites are served
+    // over HTTP and need a route.
+    const isHttp = kind === 'SERVICE' || kind === 'STATIC_SITE';
+    const resolvedRoutePath = isHttp
+      ? this.resolveRoutePath(dto, existingServiceCount, dto.name)
+      : null;
+    // Phase F: bind to the requested repo (validated to belong to the project) or
+    // default to the primary (oldest) repo.
+    const projectRepoIds = environment.project.repositories.map((repo) => repo.id);
+    let resolvedRepositoryId: string | null;
+    if (dto.repositoryId) {
+      if (!projectRepoIds.includes(dto.repositoryId)) {
+        throw Exceptions.badRequest(
+          'repositoryId is not a repository connected to this project',
+          ErrorCodes.VALIDATION_ERROR,
+        );
+      }
+      resolvedRepositoryId = dto.repositoryId;
+    } else {
+      resolvedRepositoryId = projectRepoIds[0] ?? null;
+    }
 
     let created: Service;
     try {
@@ -52,7 +73,7 @@ export class ServicesService {
           environmentId,
           repositoryId: resolvedRepositoryId,
           name: dto.name,
-          kind: (dto.kind ?? 'SERVICE') as ServiceKind,
+          kind,
           sourceDir: dto.sourceDir ?? '.',
           buildStrategy: (dto.buildStrategy ?? 'AUTO') as BuildStrategy,
           dockerfilePath: dto.dockerfilePath ?? 'Dockerfile',
@@ -62,6 +83,8 @@ export class ServicesService {
           routePath: resolvedRoutePath,
           healthcheckPath: dto.healthcheckPath ?? null,
           command: dto.command ?? null,
+          jobKind: kind === 'JOB' ? dto.jobKind ?? null : null,
+          jobSchedule: kind === 'JOB' ? dto.jobSchedule ?? null : null,
           canvasPosition: dto.canvasPosition
             ? (dto.canvasPosition as unknown as Prisma.InputJsonValue)
             : Prisma.JsonNull,
@@ -134,6 +157,26 @@ export class ServicesService {
     if (dto.routePath !== undefined) updateData.routePath = dto.routePath;
     if (dto.healthcheckPath !== undefined) updateData.healthcheckPath = dto.healthcheckPath;
     if (dto.command !== undefined) updateData.command = dto.command;
+    if (dto.jobKind !== undefined) updateData.jobKind = dto.jobKind;
+    if (dto.jobSchedule !== undefined) updateData.jobSchedule = dto.jobSchedule;
+    // Phase F: re-point a service to another connected repo (or detach it).
+    if (dto.repositoryId !== undefined) {
+      if (dto.repositoryId === null) {
+        updateData.repository = { disconnect: true };
+      } else {
+        const repo = await this.prismaService.repository.findFirst({
+          where: { id: dto.repositoryId, projectId: context.projectId },
+          select: { id: true },
+        });
+        if (!repo) {
+          throw Exceptions.badRequest(
+            'repositoryId is not a repository connected to this project',
+            ErrorCodes.VALIDATION_ERROR,
+          );
+        }
+        updateData.repository = { connect: { id: dto.repositoryId } };
+      }
+    }
     if (dto.canvasPosition !== undefined) {
       updateData.canvasPosition = dto.canvasPosition as unknown as Prisma.InputJsonValue;
     }
@@ -162,6 +205,8 @@ export class ServicesService {
       'sourceDir',
       'buildStrategy',
       'dockerfilePath',
+      // Re-homing a service to another repo changes which repo's workflow builds it.
+      'repositoryId',
     ];
     if (buildFields.some((field) => dto[field] !== undefined)) {
       await this.syncWorkflowSafely(context.service.environmentId, userId);
@@ -179,10 +224,18 @@ export class ServicesService {
     const context = await this.getServiceContext(serviceId);
     await this.projectsService.assertProjectRole(context.projectId, userId, [Role.OWNER]);
 
-    await this.prismaService.service.update({
-      where: { id: serviceId },
-      data: { deletedAt: new Date() },
-    });
+    // Service is SOFT-deleted, so the Connection FK cascade never fires. Drop the
+    // service's graph edges (as consumer target or link source) so getCanvas and
+    // connections.findAll don't leak dangling edges — mirrors ResourcesService.delete.
+    await this.prismaService.$transaction([
+      this.prismaService.connection.deleteMany({
+        where: { OR: [{ targetServiceId: serviceId }, { sourceServiceId: serviceId }] },
+      }),
+      this.prismaService.service.update({
+        where: { id: serviceId },
+        data: { deletedAt: new Date() },
+      }),
+    ]);
 
     await this.syncWorkflowSafely(context.service.environmentId, userId);
   }
@@ -206,7 +259,7 @@ export class ServicesService {
   private async getEnvironmentContext(environmentId: string): Promise<{
     id: string;
     projectId: string;
-    project: { repository: { id: string } | null };
+    project: { repositories: { id: string }[] };
   }> {
     const environment = await this.prismaService.environment.findFirst({
       where: { id: environmentId, deletedAt: null },
@@ -215,7 +268,10 @@ export class ServicesService {
         projectId: true,
         project: {
           select: {
-            repository: { select: { id: true } },
+            // Phase F: a new service binds to the project's primary (oldest) repo by
+            // default, or to an explicit `repositoryId` if one is supplied. Oldest
+            // first so `repositories[0]` is the primary.
+            repositories: { select: { id: true }, orderBy: { createdAt: 'asc' } },
           },
         },
       },

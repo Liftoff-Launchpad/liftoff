@@ -51,6 +51,9 @@ describe('InfrastructureService', () => {
     environment: {
       findFirst: jest.fn(),
     },
+    service: {
+      findMany: jest.fn().mockResolvedValue([]),
+    },
     infrastructureResource: {
       findMany: jest.fn(),
     },
@@ -80,6 +83,30 @@ describe('InfrastructureService', () => {
     resolveRuntimeVariablesForService: jest.fn().mockResolvedValue([]),
   };
 
+  const graphCompilerServiceMock = {
+    compile: jest.fn().mockResolvedValue({
+      config: {
+        version: '2.0',
+        services: [
+          {
+            name: 'my-app',
+            type: 'service',
+            runtime: { instance_size: 'apps-s-1vcpu-0.5gb', replicas: 1, port: 3000 },
+            build: { strategy: 'auto', dockerfile_path: 'Dockerfile', context: '.' },
+            routes: [{ path: '/' }],
+            env: {},
+            secrets: [],
+          },
+        ],
+        database: { enabled: false },
+        storage: { enabled: false },
+      },
+      resources: [],
+      bindings: [],
+      resourceIds: [],
+    }),
+  };
+
   beforeEach(() => {
     jest.clearAllMocks();
 
@@ -90,6 +117,7 @@ describe('InfrastructureService', () => {
       doApiServiceMock as unknown as DoApiService,
       pulumiRunnerServiceMock as unknown as PulumiRunnerService,
       variablesServiceMock as never,
+      graphCompilerServiceMock as never,
       infrastructureQueueMock as unknown as Queue,
     );
   });

@@ -23,6 +23,7 @@ import {
 } from '../queues/queue.constants';
 import { ProjectsService } from '../projects/projects.service';
 import { VariablesService } from '../variables/variables.service';
+import { GraphCompilerService } from './graph-compiler.service';
 import { PulumiRunnerService } from './pulumi-runner.service';
 import {
   AppPlatformStackArgs,
@@ -73,6 +74,7 @@ export class InfrastructureService {
     private readonly doApiService: DoApiService,
     private readonly pulumiRunnerService: PulumiRunnerService,
     private readonly variablesService: VariablesService,
+    private readonly graphCompilerService: GraphCompilerService,
     @InjectQueue(QUEUE_NAMES.INFRASTRUCTURE)
     private readonly infrastructureQueue: Queue<InfraDestroyJobPayload>,
   ) {}
@@ -87,7 +89,10 @@ export class InfrastructureService {
       Role.ADMIN,
     ]);
 
-    const config = this.resolveEnvironmentConfig(environment);
+    // Config + graph compiled from Service/Resource/Connection rows (source of
+    // truth), not the stale stored configYaml.
+    const compiledGraph = await this.graphCompilerService.compile(environment.id);
+    const config = compiledGraph.config;
     const doToken = this.decryptDoToken(environment.doAccount.doToken);
     const imageUri = await this.resolveImageUri(environment, doToken);
     const stackName = this.buildStackName(environment.project.id, environment.name);
@@ -112,6 +117,8 @@ export class InfrastructureService {
       config,
       serviceImages,
       serviceVariables,
+      resources: compiledGraph.resources,
+      bindings: compiledGraph.bindings,
     };
 
     return this.pulumiRunnerService.preview({
@@ -119,6 +126,31 @@ export class InfrastructureService {
       doToken,
       args: stackArgs,
     });
+  }
+
+  /**
+   * Applies the interactive graph: validates it (cycle detection), then runs the
+   * atomic apply — provisions any new managed resources, reconciles removed ones,
+   * and restarts services with freshly-resolved env vars (including connection
+   * bindings). Reuses each service's most recent SUCCESS image (no rebuild).
+   *
+   * Throws 400 if a service has never deployed (no image to reuse) — the caller
+   * should trigger a fresh build for that case.
+   */
+  public async applyGraph(
+    environmentId: string,
+    userId: string,
+  ): Promise<{ bundleId: string; deploymentCount: number }> {
+    const environment = await this.getEnvironmentContext(environmentId);
+    await this.projectsService.assertProjectRole(environment.project.id, userId, [
+      Role.OWNER,
+      Role.ADMIN,
+    ]);
+
+    // Fail fast on an invalid graph (e.g. a service-link cycle) before enqueuing.
+    await this.graphCompilerService.compile(environmentId);
+
+    return this.variablesService.applyVariables(environmentId, userId);
   }
 
   /**

@@ -37,11 +37,23 @@ export class CreateServiceDto {
   })
   public name!: string;
 
-  @ApiPropertyOptional({ enum: ['SERVICE'], default: 'SERVICE' })
+  @ApiPropertyOptional({
+    description:
+      'Which connected repository builds this service (Phase F multi-repo). Defaults to the project primary repo.',
+  })
   @IsOptional()
   @IsString()
-  @IsIn(['SERVICE'])
-  public kind?: 'SERVICE';
+  @MaxLength(64)
+  public repositoryId?: string | null;
+
+  @ApiPropertyOptional({
+    enum: ['SERVICE', 'WORKER', 'JOB', 'STATIC_SITE'],
+    default: 'SERVICE',
+  })
+  @IsOptional()
+  @IsString()
+  @IsIn(['SERVICE', 'WORKER', 'JOB', 'STATIC_SITE'])
+  public kind?: 'SERVICE' | 'WORKER' | 'JOB' | 'STATIC_SITE';
 
   @ApiPropertyOptional({ example: './api', description: 'Path within the repo to build from.' })
   @IsOptional()
@@ -101,6 +113,25 @@ export class CreateServiceDto {
   @IsString()
   @MaxLength(500)
   public command?: string | null;
+
+  @ApiPropertyOptional({
+    enum: ['cron', 'pre_deploy', 'post_deploy', 'failed_deploy'],
+    description:
+      'JOB kind only. App Platform natively supports the deploy-lifecycle kinds; "cron" has no native scheduler and runs post-deploy.',
+  })
+  @IsOptional()
+  @IsString()
+  @IsIn(['cron', 'pre_deploy', 'post_deploy', 'failed_deploy'])
+  public jobKind?: 'cron' | 'pre_deploy' | 'post_deploy' | 'failed_deploy' | null;
+
+  @ApiPropertyOptional({
+    example: '0 3 * * *',
+    description: 'JOB cron schedule (exported to liftoff.yml; see jobKind note on App Platform support).',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  public jobSchedule?: string | null;
 
   @ApiPropertyOptional()
   @IsOptional()

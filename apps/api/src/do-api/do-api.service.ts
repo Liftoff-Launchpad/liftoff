@@ -374,8 +374,11 @@ export class DoApiService {
   public async getAppMetrics(
     doToken: string,
     appId: string,
-    metricType: 'cpu_percentage' | 'memory_percentage' | 'network_bandwidth',
+    metricType: 'cpu_percentage' | 'memory_percentage' | 'network_bandwidth' | 'restart_count',
     doAccountId?: string,
+    componentName?: string,
+    startUnix?: number,
+    endUnix?: number,
   ): Promise<Array<{ timestamp: number; value: number }>> {
     try {
       const { data } = await this.executeRequest(
@@ -384,7 +387,14 @@ export class DoApiService {
             `${DoApiService.BASE_URL}/v2/monitoring/metrics/apps/${metricType}`,
             {
               headers: this.getHeaders(doToken),
-              params: { app_id: appId },
+              params: {
+                app_id: appId,
+                // Scope to a single App spec component (one service) when given.
+                ...(componentName ? { app_component: componentName } : {}),
+                // DO accepts a start/end window (unix seconds); omit for the default range.
+                ...(startUnix ? { start: String(startUnix) } : {}),
+                ...(endUnix ? { end: String(endUnix) } : {}),
+              },
             },
           ),
         ),

@@ -21,6 +21,14 @@ export class ScanEnvExampleDto {
   @IsString()
   @MaxLength(200)
   public sourceDir?: string;
+
+  @ApiPropertyOptional({
+    description: 'Which connected repository to scan (Phase F multi-repo). Defaults to the primary repo.',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  public repositoryId?: string;
 }
 
 export interface ScanEnvExampleResult {

@@ -24,6 +24,8 @@ interface ServerLogLine {
   timestamp: string;
   level: 'DEBUG' | 'INFO' | 'WARN' | 'ERROR';
   source: string;
+  /** Identifies which stream a line belongs to so multiple viewers don't cross-render. */
+  streamId?: string;
 }
 
 interface HttpLogEntry {
@@ -147,8 +149,15 @@ export function LiveAppLogs({
     const socket = getSocket(accessToken);
     if (!socket.connected) socket.connect();
 
+    // Unique id for THIS stream. The shared singleton socket is used by every
+    // mounted viewer, so we tag our subscription and only accept our own lines —
+    // otherwise two viewers (drawer + env-wide panel) each render every line.
+    const streamId = `${environmentId}:${serviceName ?? 'env'}:${Math.random().toString(36).slice(2)}`;
+
     const handleLogLine = (payload: ServerLogLine): void => {
       if (pausedRef.current) return;
+      // Ignore lines belonging to a different viewer's stream.
+      if (payload.streamId && payload.streamId !== streamId) return;
       counterRef.current += 1;
       const entry: DeploymentLogViewerEntry = {
         id: `live-${payload.timestamp}-${counterRef.current}`,
@@ -176,17 +185,17 @@ export function LiveAppLogs({
     socket.on('disconnect', handleDisconnect);
     setStreamConnected(socket.connected);
 
-    // Kick off the server-side stream. The gateway handler runs an async generator
-    // that polls DO; it stops cleanly when we leave (socket emits `disconnect` on
-    // page navigation, which the server listens for and closes the generator).
-    // When serviceName is set, the server scopes the stream to that App Platform
-    // component; otherwise env-wide.
+    // Kick off the server-side stream (scoped to this streamId). When serviceName
+    // is set the server scopes to that App Platform component; otherwise env-wide.
     socket.emit('start:log-stream', {
       environmentId,
+      streamId,
       ...(serviceName ? { serviceName } : {}),
     });
 
     return () => {
+      // Tell the server to stop this stream's DO-polling generator, then detach.
+      socket.emit('stop:log-stream', { streamId });
       socket.off('log-line', handleLogLine);
       socket.off('connect', handleConnect);
       socket.off('disconnect', handleDisconnect);

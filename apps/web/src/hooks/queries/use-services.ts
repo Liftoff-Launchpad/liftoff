@@ -26,8 +26,14 @@ export interface ServiceRecord {
   deletedAt: string | null;
 }
 
+export type ServiceKind = 'SERVICE' | 'WORKER' | 'JOB' | 'STATIC_SITE';
+export type JobKind = 'cron' | 'pre_deploy' | 'post_deploy' | 'failed_deploy';
+
 export interface CreateServiceInput {
   name: string;
+  kind?: ServiceKind;
+  /** Which connected repo builds this service (Phase F). Defaults to primary. */
+  repositoryId?: string | null;
   sourceDir?: string;
   buildStrategy?: 'AUTO' | 'DOCKERFILE' | 'NIXPACKS';
   dockerfilePath?: string;
@@ -36,10 +42,18 @@ export interface CreateServiceInput {
   replicas?: number;
   routePath?: string;
   healthcheckPath?: string;
+  /** Start command — set when the image has no detectable start (e.g. Node, no `start` script). */
+  command?: string | null;
+  /** JOB only — when in the deploy lifecycle the job runs. */
+  jobKind?: JobKind | null;
+  /** JOB only — cron expression (recorded; App Platform has no native scheduler). */
+  jobSchedule?: string | null;
 }
 
 export interface UpdateServiceInput {
   name?: string;
+  /** Re-point this service to another connected repo, or null to detach (Phase F). */
+  repositoryId?: string | null;
   sourceDir?: string;
   buildStrategy?: 'AUTO' | 'DOCKERFILE' | 'NIXPACKS';
   dockerfilePath?: string;
@@ -48,6 +62,7 @@ export interface UpdateServiceInput {
   replicas?: number;
   routePath?: string | null;
   healthcheckPath?: string | null;
+  command?: string | null;
 }
 
 const servicesBaseKey = ['services'] as const;

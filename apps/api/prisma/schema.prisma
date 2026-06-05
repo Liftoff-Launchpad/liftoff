@@ -73,6 +73,31 @@ enum LogLevel {
   ERROR
 }
 
+/// Graph resource node kinds (interactive graph — see INTERACTIVE_GRAPH_PLAN.md).
+/// A Resource is a provisionable infra node the user drops on the canvas.
+enum ResourceKind {
+  POSTGRES
+  REDIS
+  SPACES_BUCKET
+}
+
+/// Lifecycle of a graph Resource. DRAFT = staged on canvas but not yet provisioned;
+/// flips to PROVISIONING/ACTIVE as Pulumi reconciles on apply (Phase B+).
+enum ResourceStatus {
+  DRAFT
+  PROVISIONING
+  ACTIVE
+  FAILED
+  DESTROYING
+}
+
+/// Graph edge kinds. RESOURCE_BINDING: a Resource feeds connection env vars into a
+/// Service. SERVICE_LINK: a Service exposes its internal URL to another Service.
+enum ConnectionKind {
+  RESOURCE_BINDING
+  SERVICE_LINK
+}
+
 model User {
   id             String         @id @default(cuid())
   email          String         @unique
@@ -131,7 +156,7 @@ model Project {
   user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
   environments Environment[]
   teamMembers  TeamMember[]
-  repository   Repository?
+  repositories Repository[]
 
   @@unique([userId, name])
   @@index([userId])
@@ -154,7 +179,9 @@ model TeamMember {
 
 model Repository {
   id            String    @id @default(cuid())
-  projectId     String    @unique @map("project_id")
+  // Phase F: many repositories per project (was @unique → 1:1). A project links
+  // N repos, each contributing services (Service.repositoryId) to one App.
+  projectId     String    @map("project_id")
   githubId      Int       @map("github_id")
   fullName      String    @map("full_name")
   cloneUrl      String    @map("clone_url")
@@ -166,6 +193,7 @@ model Repository {
   project       Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
   services      Service[]
 
+  @@index([projectId])
   @@map("repositories")
 }
 
@@ -196,8 +224,9 @@ model Environment {
   variables           EnvironmentVariable[]
   pulumiStack         PulumiStack?
   resources           InfrastructureResource[]
+  resourceNodes       Resource[]
+  connections         Connection[]
   alerts              Alert[]
-  pipelineGraph       PipelineGraph?
 
   @@unique([projectId, name])
   @@index([projectId])
@@ -241,6 +270,9 @@ model Service {
   repository      Repository?       @relation(fields: [repositoryId], references: [id], onDelete: SetNull)
   deployments     Deployment[]
   variables       ServiceVariable[]
+  // Graph edges where this service is the consumer (incoming) or the link source (outgoing).
+  outgoingConnections Connection[]  @relation("ServiceOutgoing")
+  incomingConnections Connection[]  @relation("ServiceIncoming")
 
   @@unique([environmentId, name])
   @@index([environmentId])
@@ -390,6 +422,65 @@ model InfrastructureResource {
   @@map("infrastructure_resources")
 }
 
+/// A provisionable infra node on the interactive canvas (managed Postgres, Redis,
+/// Spaces bucket). First-class, named, multi-cardinal — replaces the binary
+/// config.database/storage flags. See INTERACTIVE_GRAPH_PLAN.md §3.2.
+model Resource {
+  id             String         @id @default(cuid())
+  environmentId  String         @map("environment_id")
+  kind           ResourceKind
+  /// Unique within the env. Stable handle for links + DO resource naming.
+  name           String
+  /// Kind-specific config: { version, size, nodes, evictionPolicy, ... }.
+  config         Json?
+  status         ResourceStatus @default(DRAFT)
+  /// DO cluster id / bucket name once provisioned.
+  doResourceId   String?        @map("do_resource_id")
+  /// Cached NON-SECRET outputs for UI display only (host, port, bucket, endpoint).
+  /// Secret parts (password, full uri) are never persisted here — resolved in Pulumi.
+  outputs        Json?
+  canvasPosition Json?          @map("canvas_position")
+  createdAt      DateTime       @default(now()) @map("created_at")
+  updatedAt      DateTime       @updatedAt @map("updated_at")
+  deletedAt      DateTime?      @map("deleted_at")
+  environment    Environment    @relation(fields: [environmentId], references: [id], onDelete: Cascade)
+  connections    Connection[]   @relation("ResourceConnections")
+
+  @@unique([environmentId, name])
+  @@index([environmentId])
+  @@map("resources")
+}
+
+/// A directed graph edge. Target is always the CONSUMER service. Source is a
+/// Resource (RESOURCE_BINDING) or a Service (SERVICE_LINK). The source of truth
+/// for what env vars get auto-injected at apply time (Phase B+).
+model Connection {
+  id               String         @id @default(cuid())
+  environmentId    String         @map("environment_id")
+  kind             ConnectionKind
+  sourceResourceId String?        @map("source_resource_id")
+  sourceServiceId  String?        @map("source_service_id")
+  targetServiceId  String         @map("target_service_id")
+  /// Optional override of injected var names / subset (e.g. { rename, include }).
+  injectConfig     Json?          @map("inject_config")
+  createdAt        DateTime       @default(now()) @map("created_at")
+  environment      Environment    @relation(fields: [environmentId], references: [id], onDelete: Cascade)
+  sourceResource   Resource?      @relation("ResourceConnections", fields: [sourceResourceId], references: [id], onDelete: Cascade)
+  sourceService    Service?       @relation("ServiceOutgoing", fields: [sourceServiceId], references: [id], onDelete: Cascade)
+  targetService    Service        @relation("ServiceIncoming", fields: [targetServiceId], references: [id], onDelete: Cascade)
+
+  @@index([environmentId])
+  @@index([targetServiceId])
+  @@index([sourceResourceId])
+  @@index([sourceServiceId])
+  // NOTE: a raw-SQL UNIQUE INDEX "connections_unique_edge" on
+  // (environment_id, source_resource_id, source_service_id, target_service_id)
+  // NULLS NOT DISTINCT also exists (migration 20260602180000) as a duplicate-edge
+  // backstop. Prisma can't express NULLS-NOT-DISTINCT, so it lives outside this
+  // schema — `migrate dev` will flag it as drift; keep it.
+  @@map("connections")
+}
+
 model Alert {
   id                String      @id @default(cuid())
   environmentId     String      @map("environment_id")
@@ -405,17 +496,3 @@ model Alert {
   @@map("alerts")
 }
 
-model PipelineGraph {
-  id               String      @id @default(cuid())
-  environmentId    String      @unique @map("environment_id")
-  nodes            Json
-  edges            Json
-  compiledYaml     String?     @map("compiled_yaml")
-  isValid          Boolean     @default(false) @map("is_valid")
-  validationErrors Json?       @map("validation_errors")
-  createdAt        DateTime    @default(now()) @map("created_at")
-  updatedAt        DateTime    @updatedAt @map("updated_at")
-  environment      Environment @relation(fields: [environmentId], references: [id], onDelete: Cascade)
-
-  @@map("pipeline_graphs")
-}

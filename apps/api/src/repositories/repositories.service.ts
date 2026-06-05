@@ -28,6 +28,36 @@ import {
 
 const WORKFLOW_FILE_PATH = '.github/workflows/liftoff-deploy.yml';
 
+/** Prisma select for the Service fields needed to build a workflow matrix entry. */
+const SERVICE_BUILD_ROW_SELECT = {
+  id: true,
+  name: true,
+  sourceDir: true,
+  dockerfilePath: true,
+  buildStrategy: true,
+  command: true,
+  repositoryId: true,
+} as const;
+
+/** A Service row reduced to what the workflow generator + repo partitioning need. */
+type ServiceBuildRow = {
+  id: string;
+  name: string;
+  sourceDir: string;
+  dockerfilePath: string;
+  buildStrategy: BuildStrategy;
+  command: string | null;
+  repositoryId: string | null;
+};
+
+/** A connected repo reduced to what dispatch + partitioning need (Phase F). */
+type RepoLite = {
+  id: string;
+  fullName: string;
+  branch: string;
+  createdAt: Date;
+};
+
 type ProjectEnvironmentSummary = {
   id: string;
   name: string;
@@ -89,14 +119,17 @@ export class RepositoriesService implements OnModuleInit {
   ): Promise<ConnectedRepository> {
     await this.projectsService.assertProjectRole(projectId, userId, [Role.OWNER, Role.ADMIN]);
 
-    const existingRepository = await this.prismaService.repository.findUnique({
+    // Phase F: a project may link many repos. Only reject re-connecting the SAME
+    // GitHub repo to this project; different repos are allowed.
+    const existingRepository = await this.prismaService.repository.findFirst({
       where: {
         projectId,
+        githubId: dto.githubRepoId,
       },
     });
     if (existingRepository) {
       throw Exceptions.conflict(
-        'A repository is already connected to this project',
+        'This repository is already connected to the project',
         ErrorCodes.REPOSITORY_ALREADY_CONNECTED,
       );
     }
@@ -202,29 +235,53 @@ export class RepositoriesService implements OnModuleInit {
         doToken,
       );
 
-      const serviceBuildSpecs = await this.buildServiceBuildSpecs(
-        targetEnvironment.id,
-        project.name,
-        targetEnvironment.name,
-      );
-      const workflowContent = await this.workflowGeneratorService.generate({
-        projectName: project.name,
-        environmentId: targetEnvironment.id,
-        branch: dto.branch,
-        liftoffApiUrl: this.getWebhookBaseUrl(),
-        services: serviceBuildSpecs,
-        doToken,
-        doAccountId: targetEnvironment.doAccountId,
+      // Phase F: a freshly connected repo owns the services that point at it.
+      // For the project's first/primary repo, adopt the env's still-unassigned
+      // (repositoryId = null) services so the default service builds from it.
+      const projectRepoCount = await this.prismaService.repository.count({
+        where: { projectId },
       });
+      const isPrimaryRepository = projectRepoCount === 1;
+      if (isPrimaryRepository) {
+        await this.prismaService.service.updateMany({
+          where: { environmentId: targetEnvironment.id, repositoryId: null, deletedAt: null },
+          data: { repositoryId: repository.id },
+        });
+      }
 
-      await this.githubService.commitFile(
-        githubToken,
-        dto.fullName,
-        WORKFLOW_FILE_PATH,
-        workflowContent,
-        this.getWorkflowCommitMessage(),
-        dto.branch,
+      const targetServices = await this.loadEnvServiceBuildRows(targetEnvironment.id);
+      const ownedServices = targetServices.filter(
+        (service) => service.repositoryId === repository.id,
       );
+
+      // Only commit a workflow when this repo actually builds something. A repo
+      // connected before it owns any services gets its workflow on the next sync.
+      if (ownedServices.length > 0) {
+        const serviceBuildSpecs = this.buildServiceSpecsFromRows(
+          ownedServices,
+          project.name,
+          targetEnvironment.name,
+          targetServices.length > 1,
+        );
+        const workflowContent = await this.workflowGeneratorService.generate({
+          projectName: project.name,
+          environmentId: targetEnvironment.id,
+          branch: dto.branch,
+          liftoffApiUrl: this.getWebhookBaseUrl(),
+          services: serviceBuildSpecs,
+          doToken,
+          doAccountId: targetEnvironment.doAccountId,
+        });
+
+        await this.githubService.commitFile(
+          githubToken,
+          dto.fullName,
+          WORKFLOW_FILE_PATH,
+          workflowContent,
+          this.getWorkflowCommitMessage(),
+          dto.branch,
+        );
+      }
     } catch (error) {
       await this.deleteWebhookIfPresent(githubToken, dto.fullName, webhookId);
       await this.prismaService.repository.delete({
@@ -241,18 +298,46 @@ export class RepositoriesService implements OnModuleInit {
   }
 
   /**
-   * Disconnects a project repository and removes the GitHub webhook.
+   * Disconnects a project repository and removes the GitHub webhook. With
+   * `repositoryId`, removes that specific repo (Phase F multi-repo); without it,
+   * removes the project's primary (oldest) repo for single-repo back-compat.
+   * Services that built from it have their `repositoryId` nulled (schema SetNull).
    */
-  public async disconnect(projectId: string, userId: string): Promise<void> {
+  public async disconnect(
+    projectId: string,
+    userId: string,
+    repositoryId?: string,
+  ): Promise<void> {
     await this.projectsService.assertProjectRole(projectId, userId, [Role.OWNER, Role.ADMIN]);
 
-    const repository = await this.prismaService.repository.findUnique({
+    const repository = await this.prismaService.repository.findFirst({
       where: {
         projectId,
+        ...(repositoryId ? { id: repositoryId } : {}),
       },
+      orderBy: { createdAt: 'asc' },
     });
     if (!repository) {
       return;
+    }
+
+    // Phase F guard: if this repo still owns services AND another repo remains,
+    // disconnecting would null those services' repositoryId and the next repo's
+    // push would silently ADOPT them (building the wrong source). Block until the
+    // user re-points or deletes them. (A project's only repo can be disconnected —
+    // its services just become unassigned, with no other repo to wrongly adopt.)
+    const [ownedServiceCount, projectRepoCount] = await Promise.all([
+      this.prismaService.service.count({
+        where: { repositoryId: repository.id, deletedAt: null },
+      }),
+      this.prismaService.repository.count({ where: { projectId } }),
+    ]);
+    if (ownedServiceCount > 0 && projectRepoCount > 1) {
+      throw Exceptions.conflict(
+        `${ownedServiceCount} service(s) still build from ${repository.fullName}. ` +
+          'Re-point or delete them before disconnecting.',
+        ErrorCodes.VALIDATION_ERROR,
+      );
     }
 
     const githubToken = await this.getDecryptedGitHubTokenOrThrow(userId);
@@ -272,7 +357,7 @@ export class RepositoriesService implements OnModuleInit {
 
     await this.prismaService.repository.delete({
       where: {
-        projectId,
+        id: repository.id,
       },
     });
   }
@@ -302,8 +387,9 @@ export class RepositoriesService implements OnModuleInit {
   ): Promise<ScanEnvExampleResult> {
     await this.projectsService.assertProjectRole(projectId, userId);
 
-    const repository = await this.prismaService.repository.findUnique({
-      where: { projectId },
+    const repository = await this.prismaService.repository.findFirst({
+      where: { projectId, ...(dto.repositoryId ? { id: dto.repositoryId } : {}) },
+      orderBy: { createdAt: 'asc' },
       select: { fullName: true },
     });
     if (!repository) {
@@ -411,21 +497,42 @@ export class RepositoriesService implements OnModuleInit {
   }
 
   /**
-   * Returns the currently connected project repository, if any.
+   * Returns the project's primary (oldest) connected repository, if any. Kept for
+   * single-repo back-compat (canvas, auto-setup). Use `findAllByProject` for the
+   * full multi-repo list.
    */
   public async findByProject(projectId: string, userId: string): Promise<ConnectedRepository | null> {
     await this.projectsService.assertProjectRole(projectId, userId);
 
-    const repository = await this.prismaService.repository.findUnique({
+    const repository = await this.prismaService.repository.findFirst({
       where: {
         projectId,
       },
+      orderBy: { createdAt: 'asc' },
     });
     if (!repository) {
       return null;
     }
 
     return this.toConnectedRepository(repository);
+  }
+
+  /**
+   * Returns every repository linked to the project (Phase F multi-repo), oldest
+   * first. The first entry is the "primary" repo that adopts unassigned services.
+   */
+  public async findAllByProject(
+    projectId: string,
+    userId: string,
+  ): Promise<ConnectedRepository[]> {
+    await this.projectsService.assertProjectRole(projectId, userId);
+
+    const repositories = await this.prismaService.repository.findMany({
+      where: { projectId },
+      orderBy: { createdAt: 'asc' },
+    });
+
+    return repositories.map((repository) => this.toConnectedRepository(repository));
   }
 
   /**
@@ -449,11 +556,12 @@ export class RepositoriesService implements OnModuleInit {
           select: {
             id: true,
             name: true,
-            repository: {
-              select: { id: true, fullName: true, branch: true },
+            repositories: {
+              select: { id: true, fullName: true, branch: true, createdAt: true },
             },
           },
         },
+        services: { select: SERVICE_BUILD_ROW_SELECT, where: { deletedAt: null }, orderBy: { createdAt: 'asc' } },
       },
     });
 
@@ -461,8 +569,8 @@ export class RepositoriesService implements OnModuleInit {
       throw Exceptions.notFound('Environment not found', ErrorCodes.ENVIRONMENT_NOT_FOUND);
     }
 
-    const repository = environment.project.repository;
-    if (!repository) {
+    const repositories = environment.project.repositories;
+    if (repositories.length === 0) {
       // No repo connected yet — workflow file gets created on first connect.
       this.logger.log(
         `syncWorkflowForEnvironment: skipping env ${environmentId} (no connected repository)`,
@@ -472,37 +580,55 @@ export class RepositoriesService implements OnModuleInit {
 
     const githubToken = await this.getDecryptedGitHubTokenOrThrow(userId);
     const doToken = await this.getDecryptedDoTokenForDoAccount(environment.doAccountId, userId);
-
-    const serviceBuildSpecs = await this.buildServiceBuildSpecs(
-      environment.id,
-      environment.project.name,
-      environment.name,
-    );
     const buildVariableKeys = await this.collectBuildVariableKeys(environment.id);
-    const workflowContent = await this.workflowGeneratorService.generate({
-      projectName: environment.project.name,
-      environmentId: environment.id,
-      branch: repository.branch,
-      liftoffApiUrl: this.getWebhookBaseUrl(),
-      services: serviceBuildSpecs,
-      buildVariableKeys,
-      doToken,
-      doAccountId: environment.doAccountId,
-    });
 
-    await this.githubService.commitFile(
-      githubToken,
-      repository.fullName,
-      WORKFLOW_FILE_PATH,
-      workflowContent,
-      `chore: sync Liftoff deploy workflow (${serviceBuildSpecs.length} service${
-        serviceBuildSpecs.length === 1 ? '' : 's'
-      }, ${buildVariableKeys.length} build var${buildVariableKeys.length === 1 ? '' : 's'})`,
-      repository.branch,
-    );
+    // Phase F: each repo gets its OWN workflow with only the services it builds.
+    // Image-repo namespacing stays keyed off the full env service count so image
+    // paths are stable regardless of how services split across repos.
+    const useNamespacedRepos = environment.services.length > 1;
+    const partitions = this.partitionServicesByRepository(repositories, environment.services);
+
+    let committed = 0;
+    for (const { repository, services } of partitions) {
+      if (services.length === 0) {
+        this.logger.log(
+          `syncWorkflowForEnvironment: repo ${repository.fullName} owns no services — skipping its workflow`,
+        );
+        continue;
+      }
+
+      const serviceBuildSpecs = this.buildServiceSpecsFromRows(
+        services,
+        environment.project.name,
+        environment.name,
+        useNamespacedRepos,
+      );
+      const workflowContent = await this.workflowGeneratorService.generate({
+        projectName: environment.project.name,
+        environmentId: environment.id,
+        branch: repository.branch,
+        liftoffApiUrl: this.getWebhookBaseUrl(),
+        services: serviceBuildSpecs,
+        buildVariableKeys,
+        doToken,
+        doAccountId: environment.doAccountId,
+      });
+
+      await this.githubService.commitFile(
+        githubToken,
+        repository.fullName,
+        WORKFLOW_FILE_PATH,
+        workflowContent,
+        `chore: sync Liftoff deploy workflow (${serviceBuildSpecs.length} service${
+          serviceBuildSpecs.length === 1 ? '' : 's'
+        }, ${buildVariableKeys.length} build var${buildVariableKeys.length === 1 ? '' : 's'})`,
+        repository.branch,
+      );
+      committed += 1;
+    }
 
     this.logger.log(
-      `Synced workflow file for env ${environmentId} (${serviceBuildSpecs.length} services, ${buildVariableKeys.length} build vars)`,
+      `Synced ${committed} repo workflow(s) for env ${environmentId} (${environment.services.length} services, ${buildVariableKeys.length} build vars)`,
     );
   }
 
@@ -524,14 +650,14 @@ export class RepositoriesService implements OnModuleInit {
       where: { id: environmentId, deletedAt: null },
       select: {
         id: true,
-        project: { select: { repository: { select: { fullName: true } } } },
+        project: { select: { repositories: { select: { fullName: true } } } },
       },
     });
     if (!environment) {
       throw Exceptions.notFound('Environment not found', ErrorCodes.ENVIRONMENT_NOT_FOUND);
     }
-    const repository = environment.project.repository;
-    if (!repository) {
+    const repositories = environment.project.repositories;
+    if (repositories.length === 0) {
       this.logger.log(
         `syncBuildVariablesForEnvironment: skipping env ${environmentId} (no connected repository)`,
       );
@@ -566,53 +692,57 @@ export class RepositoriesService implements OnModuleInit {
       }
     }
 
-    for (const [key, value] of desired) {
+    // Phase F: build args may be consumed by any of the project's repos, so push
+    // the secret set to every connected repo and prune stale ones on each.
+    for (const repository of repositories) {
+      for (const [key, value] of desired) {
+        try {
+          await this.githubService.upsertActionsSecret(
+            githubToken,
+            repository.fullName,
+            `LIFTOFF_BUILD_${key}`,
+            value,
+          );
+        } catch (error) {
+          this.logger.warn(
+            `Failed to upsert LIFTOFF_BUILD_${key} on ${repository.fullName}: ${
+              error instanceof Error ? error.message : 'unknown error'
+            }`,
+          );
+        }
+      }
+
       try {
-        await this.githubService.upsertActionsSecret(
+        const existingSecrets = await this.githubService.listActionsSecrets(
           githubToken,
           repository.fullName,
-          `LIFTOFF_BUILD_${key}`,
-          value,
         );
+        for (const secretName of existingSecrets) {
+          if (!secretName.startsWith('LIFTOFF_BUILD_')) continue;
+          const key = secretName.slice('LIFTOFF_BUILD_'.length);
+          if (!desired.has(key)) {
+            await this.githubService
+              .deleteActionsSecret(githubToken, repository.fullName, secretName)
+              .catch((error) =>
+                this.logger.warn(
+                  `Failed to delete stale ${secretName}: ${
+                    error instanceof Error ? error.message : 'unknown error'
+                  }`,
+                ),
+              );
+          }
+        }
       } catch (error) {
         this.logger.warn(
-          `Failed to upsert LIFTOFF_BUILD_${key} on ${repository.fullName}: ${
+          `Failed to list Actions secrets for cleanup on ${repository.fullName}: ${
             error instanceof Error ? error.message : 'unknown error'
           }`,
         );
       }
     }
 
-    try {
-      const existingSecrets = await this.githubService.listActionsSecrets(
-        githubToken,
-        repository.fullName,
-      );
-      for (const secretName of existingSecrets) {
-        if (!secretName.startsWith('LIFTOFF_BUILD_')) continue;
-        const key = secretName.slice('LIFTOFF_BUILD_'.length);
-        if (!desired.has(key)) {
-          await this.githubService
-            .deleteActionsSecret(githubToken, repository.fullName, secretName)
-            .catch((error) =>
-              this.logger.warn(
-                `Failed to delete stale ${secretName}: ${
-                  error instanceof Error ? error.message : 'unknown error'
-                }`,
-              ),
-            );
-        }
-      }
-    } catch (error) {
-      this.logger.warn(
-        `Failed to list Actions secrets for cleanup on ${repository.fullName}: ${
-          error instanceof Error ? error.message : 'unknown error'
-        }`,
-      );
-    }
-
     this.logger.log(
-      `Synced ${desired.size} BUILD variables to ${repository.fullName} for env ${environmentId}`,
+      `Synced ${desired.size} BUILD variables to ${repositories.length} repo(s) for env ${environmentId}`,
     );
   }
 
@@ -642,21 +772,20 @@ export class RepositoriesService implements OnModuleInit {
         project: {
           select: {
             id: true,
-            repository: { select: { fullName: true, branch: true } },
+            repositories: { select: { id: true, fullName: true, branch: true, createdAt: true } },
           },
         },
         services: {
           where: { deletedAt: null },
           orderBy: { createdAt: 'asc' },
-          select: { id: true },
+          select: { id: true, repositoryId: true },
         },
       },
     });
     if (!environment) {
       throw Exceptions.notFound('Environment not found', ErrorCodes.ENVIRONMENT_NOT_FOUND);
     }
-    const repository = environment.project.repository;
-    if (!repository) {
+    if (environment.project.repositories.length === 0) {
       throw Exceptions.badRequest(
         'Project has no connected repository — connect one before triggering a build',
         ErrorCodes.REPOSITORY_NOT_FOUND,
@@ -673,7 +802,7 @@ export class RepositoriesService implements OnModuleInit {
       Role.ADMIN,
     ]);
 
-    // Re-sync the workflow file so we have `workflow_dispatch:` in the YAML.
+    // Re-sync the workflow files so each repo has `workflow_dispatch:` in its YAML.
     // If this is a long-lived env whose workflow was committed before this
     // feature, the dispatch call would 422 with "Workflow does not have
     // workflow_dispatch trigger" otherwise.
@@ -685,11 +814,21 @@ export class RepositoriesService implements OnModuleInit {
     // bundles flip to CANCELLED instead of timing out 30 min later.
     await this.cancelInFlightDeploymentsForEnv(environmentId);
 
+    // Phase F: only dispatch repos that actually build a service in this env.
+    const dispatchTargets = this.partitionServicesByRepository(
+      environment.project.repositories,
+      environment.services,
+    ).filter((partition) => partition.services.length > 0);
+    if (dispatchTargets.length === 0) {
+      throw Exceptions.badRequest(
+        'No service is linked to a connected repository — assign services to a repo first',
+        ErrorCodes.NOT_FOUND,
+      );
+    }
+
     // Pre-create the bundle + per-service deployments BEFORE dispatching.
-    // GitHub Actions runs the matrix, each step calls deploy-complete with a
-    // serviceName — the handler finds these QUEUED rows and updates them. Without
-    // this pre-creation, every callback would fail with "No deployment in
-    // QUEUED/BUILDING/PUSHING state for service X".
+    // GitHub Actions runs each repo's matrix, each step calls deploy-complete with
+    // a serviceName — the handler finds these QUEUED rows and updates them.
     const bundle = await this.prismaService.deploymentBundle.create({
       data: {
         environmentId,
@@ -712,15 +851,19 @@ export class RepositoriesService implements OnModuleInit {
 
     const githubToken = await this.getDecryptedGitHubTokenOrThrow(userId);
     const workflowFilename = WORKFLOW_FILE_PATH.split('/').pop() ?? 'liftoff-deploy.yml';
-    const ref = environment.gitBranch || repository.branch || 'main';
+    const ref = environment.gitBranch || 'main';
 
+    const dispatched: string[] = [];
     try {
-      await this.githubService.dispatchWorkflow(
-        githubToken,
-        repository.fullName,
-        workflowFilename,
-        ref,
-      );
+      for (const { repository } of dispatchTargets) {
+        await this.githubService.dispatchWorkflow(
+          githubToken,
+          repository.fullName,
+          workflowFilename,
+          repository.branch || ref,
+        );
+        dispatched.push(repository.fullName);
+      }
     } catch (error) {
       // Roll back the bundle on dispatch failure so we don't leave orphan
       // QUEUED deployments to time out 30 min later.
@@ -738,7 +881,7 @@ export class RepositoriesService implements OnModuleInit {
         .catch(() => undefined);
 
       this.logger.warn(
-        `dispatchWorkflow failed for ${repository.fullName}/${workflowFilename}@${ref}: ${
+        `dispatchWorkflow failed during multi-repo Deploy-now (env ${environmentId}): ${
           error instanceof Error ? error.message : 'unknown error'
         }`,
       );
@@ -750,13 +893,13 @@ export class RepositoriesService implements OnModuleInit {
     }
 
     this.logger.log(
-      `Dispatched workflow ${workflowFilename} on ${repository.fullName}@${ref} (bundle ${bundle.id}) for env ${environmentId}`,
+      `Dispatched ${dispatched.length} workflow(s) [${dispatched.join(', ')}] (bundle ${bundle.id}) for env ${environmentId}`,
     );
 
     return {
       workflowFile: workflowFilename,
       ref,
-      repository: repository.fullName,
+      repository: dispatched.join(', '),
       bundleId: bundle.id,
     };
   }
@@ -943,24 +1086,26 @@ export class RepositoriesService implements OnModuleInit {
    * scope each service's images under `<project>/<env>/<service>` so the spec
    * patcher can route the right tag to the right service entry.
    */
-  private async buildServiceBuildSpecs(
-    environmentId: string,
-    projectName: string,
-    environmentName: string,
-  ): Promise<ServiceBuildSpec[]> {
-    const services = await this.prismaService.service.findMany({
+  /** Loads the env's Service rows reduced to the fields a build matrix needs. */
+  private async loadEnvServiceBuildRows(environmentId: string): Promise<ServiceBuildRow[]> {
+    return this.prismaService.service.findMany({
       where: { environmentId, deletedAt: null },
       orderBy: { createdAt: 'asc' },
+      select: SERVICE_BUILD_ROW_SELECT,
     });
+  }
 
-    if (services.length === 0) {
-      throw Exceptions.internalError(
-        'Environment has no services to build',
-        ErrorCodes.INTERNAL_ERROR,
-      );
-    }
-
-    const useNamespacedRepos = services.length > 1;
+  /**
+   * Maps already-loaded service rows into workflow build specs. `useNamespacedRepos`
+   * is decided from the FULL env service count (not the per-repo subset) so image
+   * repository paths stay stable however services split across repos.
+   */
+  private buildServiceSpecsFromRows(
+    services: ServiceBuildRow[],
+    projectName: string,
+    environmentName: string,
+    useNamespacedRepos: boolean,
+  ): ServiceBuildSpec[] {
     return services.map((service) => ({
       name: service.name,
       context: service.sourceDir || '.',
@@ -969,6 +1114,32 @@ export class RepositoriesService implements OnModuleInit {
       imageRepository: useNamespacedRepos
         ? `${projectName}/${environmentName}/${service.name}`
         : `${projectName}/${environmentName}`,
+      command: service.command ?? undefined,
+    }));
+  }
+
+  /**
+   * Groups env services by the repo they build from (Phase F). A service with a
+   * null repositoryId is owned by the primary (oldest) repo — this preserves the
+   * single-repo behavior where every service builds from the one connected repo.
+   * Repos are returned in creation order; the first is the primary.
+   */
+  private partitionServicesByRepository<T extends { repositoryId: string | null }>(
+    repositories: RepoLite[],
+    services: T[],
+  ): Array<{ repository: RepoLite; services: T[]; isPrimary: boolean }> {
+    const ordered = [...repositories].sort(
+      (a, b) => a.createdAt.getTime() - b.createdAt.getTime(),
+    );
+    const primaryId = ordered[0]?.id ?? null;
+    return ordered.map((repository, index) => ({
+      repository,
+      isPrimary: index === 0,
+      services: services.filter(
+        (service) =>
+          service.repositoryId === repository.id ||
+          (service.repositoryId === null && repository.id === primaryId),
+      ),
     }));
   }
 

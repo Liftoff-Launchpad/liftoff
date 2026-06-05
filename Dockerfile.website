@@ -1,0 +1,49 @@
+# ------------------------------------------------------------------------------
+# Base Stage - Dependencies
+# ------------------------------------------------------------------------------
+# The marketing site (apps/website) only depends on @liftoff/config (dev, for the
+# shared tsconfig). pnpm --frozen-lockfile tolerates absent workspace members, so
+# we copy just the manifests this app needs.
+FROM node:20-alpine AS base
+RUN npm install -g pnpm@9
+
+WORKDIR /app
+COPY pnpm-workspace.yaml package.json pnpm-lock.yaml ./
+COPY packages/config/package.json packages/config/
+COPY apps/website/package.json apps/website/
+RUN pnpm install --frozen-lockfile
+
+# ------------------------------------------------------------------------------
+# Development Stage (hot-reload; used by docker-compose with source volume mounts)
+# ------------------------------------------------------------------------------
+FROM base AS development
+COPY packages/config/ packages/config/
+COPY apps/website/ apps/website/
+
+WORKDIR /app/apps/website
+EXPOSE 3001
+CMD ["pnpm", "dev"]
+
+# ------------------------------------------------------------------------------
+# Builder Stage
+# ------------------------------------------------------------------------------
+FROM base AS builder
+COPY packages/config/ packages/config/
+COPY apps/website/ apps/website/
+RUN pnpm --filter website build
+
+# ------------------------------------------------------------------------------
+# Production Stage (Next.js standalone output — self-contained server)
+# ------------------------------------------------------------------------------
+FROM node:20-alpine AS production
+WORKDIR /app
+ENV NODE_ENV=production
+ENV PORT=3001
+ENV HOSTNAME=0.0.0.0
+
+COPY --from=builder /app/apps/website/.next/standalone ./
+COPY --from=builder /app/apps/website/.next/static ./apps/website/.next/static
+COPY --from=builder /app/apps/website/public ./apps/website/public
+
+EXPOSE 3001
+CMD ["node", "apps/website/server.js"]

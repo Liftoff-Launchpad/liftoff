@@ -12,6 +12,7 @@ import {
   useEdgesState,
   type Connection,
   type Edge,
+  type EdgeChange,
   type Node as RFNode,
   type OnConnect,
   type NodeChange,
@@ -26,8 +27,12 @@ import { AddServiceDialog } from './add-service-dialog';
 import { CanvasEmptyState } from './canvas-empty-state';
 import { ServiceNode } from './service-node';
 import { DatabaseNode } from './database-node';
+import { RepositoryNode } from './repository-node';
+import { EdgeConfigPopover } from './edge-config-popover';
 import { CanvasToolbar } from './canvas-toolbar';
+import { CanvasActivity } from './canvas-activity';
 import { ConfigDrawer } from './config-drawer/config-drawer';
+import { ResourceDrawer } from './config-drawer/resource-drawer';
 import { DrawerLogsTab } from './config-drawer/drawer-logs-tab';
 import { DrawerVariablesTab } from './config-drawer/drawer-variables-tab';
 import { DrawerMetricsTab } from './config-drawer/drawer-metrics-tab';
@@ -36,10 +41,16 @@ import { StagedChangesBar } from './staged-changes/staged-changes-bar';
 import { CommandPalette } from './command-palette/command-palette';
 import { DevModeView } from './dev-mode-view';
 import { useCanvas, useSaveCanvasLayout, type CanvasNode, type CanvasEdge } from '@/hooks/queries/use-canvas';
+import { useCreateResource, type ResourceKind } from '@/hooks/queries/use-resources';
+import { useCreateConnection, useDeleteConnection } from '@/hooks/queries/use-connections';
+import { useApplyGraph, useTriggerBuild } from '@/hooks/queries/use-environments';
+import { toast } from '@/components/ui/use-toast';
 import { useStagedChangesStore } from './staged-changes/staged-changes-store';
 import { getSocket } from '@/lib/ws-client';
 import { WsEvents, type WsDeploymentStatusPayload } from '@liftoff/shared';
 import { useAuthStore } from '@/store/auth.store';
+
+const RESOURCE_NODE_TYPES = ['database', 'redis', 'storage'];
 
 interface ProjectCanvasProps {
   projectId: string;
@@ -50,6 +61,7 @@ const nodeTypes: Record<string, React.ComponentType<any>> = {
   database: DatabaseNode,
   redis: DatabaseNode,
   storage: DatabaseNode,
+  repository: RepositoryNode,
 };
 
 function toRFNodes(nodes: CanvasNode[]): RFNode[] {
@@ -58,18 +70,42 @@ function toRFNodes(nodes: CanvasNode[]): RFNode[] {
     type: n.type,
     position: n.position,
     data: n.data,
+    // Repository nodes are fixed-position provenance anchors (no canvasPosition row).
+    ...(n.type === 'repository' ? { draggable: false } : {}),
   }));
 }
 
 function toRFEdges(edges: CanvasEdge[]): Edge[] {
-  return edges.map((e) => ({
-    id: e.id,
-    source: e.source,
-    target: e.target,
-    animated: true,
-    style: { stroke: 'hsl(var(--muted-foreground) / 0.25)', strokeWidth: 2 },
-    markerEnd: { type: MarkerType.ArrowClosed, color: 'hsl(var(--muted-foreground) / 0.25)' },
-  }));
+  return edges.map((e) => {
+    // Repo → service provenance edges: dashed, muted, no arrow label.
+    if (e.kind === 'repo') {
+      return {
+        id: e.id,
+        source: e.source,
+        target: e.target,
+        animated: false,
+        style: {
+          stroke: 'hsl(var(--muted-foreground) / 0.25)',
+          strokeWidth: 1.5,
+          strokeDasharray: '4 4',
+        },
+        markerEnd: { type: MarkerType.ArrowClosed, color: 'hsl(var(--muted-foreground) / 0.25)' },
+      };
+    }
+    return {
+      id: e.id,
+      source: e.source,
+      target: e.target,
+      animated: true,
+      label: e.label,
+      labelStyle: { fill: 'hsl(var(--muted-foreground))', fontSize: 11, fontFamily: 'var(--font-mono, monospace)' },
+      labelBgStyle: { fill: 'hsl(var(--card))', fillOpacity: 0.9 },
+      labelBgPadding: [6, 3] as [number, number],
+      labelBgBorderRadius: 4,
+      style: { stroke: 'hsl(var(--muted-foreground) / 0.35)', strokeWidth: 2 },
+      markerEnd: { type: MarkerType.ArrowClosed, color: 'hsl(var(--muted-foreground) / 0.35)' },
+    };
+  });
 }
 
 export function ProjectCanvas({ projectId }: ProjectCanvasProps) {
@@ -78,7 +114,9 @@ export function ProjectCanvas({ projectId }: ProjectCanvasProps) {
 
   const { data: canvasData, isLoading } = useCanvas(projectId);
   const saveLayoutMutation = useSaveCanvasLayout(projectId);
-  const { changes: stagedChanges } = useStagedChangesStore();
+  const createResource = useCreateResource(projectId);
+  const createConnection = useCreateConnection(projectId);
+  const deleteConnection = useDeleteConnection(projectId);
 
   const [nodes, setNodes, onNodesChange] = useNodesState<RFNode>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
@@ -89,8 +127,23 @@ export function ProjectCanvas({ projectId }: ProjectCanvasProps) {
   const [activityOpen, setActivityOpen] = useState(false);
   const [addServiceOpen, setAddServiceOpen] = useState(false);
   const [logsPanelOpen, setLogsPanelOpen] = useState(false);
+  const [edgePopover, setEdgePopover] = useState<{
+    connectionId: string;
+    sourceResourceKind: 'POSTGRES' | 'REDIS' | 'SPACES_BUCKET' | null;
+    position: { x: number; y: number };
+  } | null>(null);
 
   const addChange = useStagedChangesStore((s) => s.addChange);
+
+  // The env every node belongs to (single-env canvas). Computed early so the
+  // Deploy hooks below can bind to it.
+  const activeEnvironmentId = useMemo(() => {
+    const envNode = nodes.find((n) => n.type === 'service');
+    return String(envNode?.data?.environmentId ?? '');
+  }, [nodes]);
+
+  const applyGraph = useApplyGraph(projectId);
+  const triggerBuild = useTriggerBuild(projectId, activeEnvironmentId);
 
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -98,9 +151,13 @@ export function ProjectCanvas({ projectId }: ProjectCanvasProps) {
     (changedNodes: RFNode[]) => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
       debounceRef.current = setTimeout(() => {
-        const positions = changedNodes
-          .filter((n) => !n.id.startsWith('db-') && !n.id.startsWith('redis-') && !n.id.startsWith('storage-'))
-          .map((n) => ({ id: n.id, x: n.position.x, y: n.position.y }));
+        // Persist positions for every node — service and resource nodes alike now
+        // carry real row ids, and the backend routes each to the right table.
+        const positions = changedNodes.map((n) => ({
+          id: n.id,
+          x: Math.round(n.position.x),
+          y: Math.round(n.position.y),
+        }));
         if (positions.length > 0) {
           saveLayoutMutation.mutate(positions);
         }
@@ -130,6 +187,16 @@ export function ProjectCanvas({ projectId }: ProjectCanvasProps) {
 
   const onConnect: OnConnect = useCallback(
     (connection: Connection) => {
+      if (!connection.source || !connection.target) return;
+
+      // Validate BEFORE the optimistic add so we never leave an orphan edge with
+      // no backing mutation (and thus no reconciling refetch to roll it back).
+      // The consumer (target) determines the env; the backend infers edge kind.
+      const targetNode = nodes.find((n) => n.id === connection.target);
+      const environmentId = String(targetNode?.data?.environmentId ?? '');
+      if (!environmentId) return;
+
+      // Optimistic edge for snappy UX; persistence reconciles via canvas refetch.
       setEdges((eds) =>
         addEdge(
           {
@@ -141,17 +208,65 @@ export function ProjectCanvas({ projectId }: ProjectCanvasProps) {
           eds,
         ),
       );
+
+      createConnection.mutate({
+        environmentId,
+        sourceId: connection.source,
+        targetId: connection.target,
+      });
     },
-    [setEdges],
+    [setEdges, nodes, createConnection],
+  );
+
+  // Intercept edge removals (select + Delete) to delete the persisted Connection.
+  // Only fire for edges that exist server-side; optimistic/unpersisted edges are skipped.
+  const handleEdgesChange = useCallback(
+    (changes: EdgeChange<Edge>[]) => {
+      onEdgesChange(changes);
+      for (const change of changes) {
+        if (change.type !== 'remove') continue;
+        const edge = canvasData?.edges.find((e) => e.id === change.id);
+        // Only persisted Connection edges are deletable; repo provenance edges are derived.
+        if (edge && edge.kind !== 'repo') {
+          deleteConnection.mutate(change.id);
+        }
+      }
+    },
+    [onEdgesChange, canvasData, deleteConnection],
   );
 
   const onNodeClick = useCallback((_: unknown, node: RFNode) => {
+    // Repository nodes are informational (no service/resource drawer).
+    if (node.type === 'repository') return;
     setSelectedNode(node);
+    setEdgePopover(null);
   }, []);
+
+  // Click a resource→service binding edge to preview/configure its injected vars.
+  const onEdgeClick = useCallback(
+    (event: React.MouseEvent, edge: Edge) => {
+      const canvasEdge = canvasData?.edges.find((e) => e.id === edge.id);
+      if (!canvasEdge || canvasEdge.kind === 'repo') return;
+      const sourceNode = canvasData?.nodes.find((n) => n.id === edge.source);
+      const kind = (sourceNode?.data.resourceKind ?? null) as
+        | 'POSTGRES'
+        | 'REDIS'
+        | 'SPACES_BUCKET'
+        | null;
+      if (!kind) return; // only resource bindings expose detailed-var config
+      setEdgePopover({
+        connectionId: edge.id,
+        sourceResourceKind: kind,
+        position: { x: event.clientX, y: event.clientY },
+      });
+    },
+    [canvasData],
+  );
 
   const onPaneClick = useCallback(() => {
     setSelectedNode(null);
     setContextMenuPos(null);
+    setEdgePopover(null);
   }, []);
 
   const onPaneContextMenu = useCallback((event: { preventDefault: () => void; clientX: number; clientY: number }) => {
@@ -162,73 +277,129 @@ export function ProjectCanvas({ projectId }: ProjectCanvasProps) {
 
   const handleAddService = useCallback(
     (type: 'postgres' | 'redis' | 'storage' | 'worker' | 'cron') => {
-      const typeMap = {
-        postgres: { label: 'PostgreSQL', nodeType: 'database' as const, engine: 'postgres' as const },
-        redis: { label: 'Redis', nodeType: 'redis' as const, engine: 'redis' as const },
-        storage: { label: 'Spaces Bucket', nodeType: 'storage' as const, engine: undefined },
-        worker: { label: 'Worker Service', nodeType: 'service' as const, engine: undefined },
-        cron: { label: 'Cron Job', nodeType: 'service' as const, engine: undefined },
-      };
-
-      const config = typeMap[type];
-      const newId = `${config.nodeType}-staged-${Date.now()}`;
       const serviceNode = nodes.find((n) => n.type === 'service');
+      const environmentId = String(serviceNode?.data?.environmentId ?? '');
 
+      // Resource kinds are persisted as real DRAFT Resource rows; the canvas
+      // refetch renders them. They are wired to services by the user drawing an
+      // edge (Phase B turns those edges into auto-injected env vars).
+      const resourceKindByType: Partial<Record<typeof type, ResourceKind>> = {
+        postgres: 'POSTGRES',
+        redis: 'REDIS',
+        storage: 'SPACES_BUCKET',
+      };
+      const resourceKind = resourceKindByType[type];
+
+      if (resourceKind) {
+        if (!environmentId) return;
+        createResource.mutate({
+          environmentId,
+          kind: resourceKind,
+          canvasPosition: {
+            x: Math.round((serviceNode?.position.x ?? 400) + 320),
+            y: Math.round((serviceNode?.position.y ?? 200) + 200),
+          },
+        });
+        return;
+      }
+
+      // worker / cron remain placeholder canvas nodes until their backend kinds
+      // ship in Phase D (workers/jobs).
+      const placeholderLabel = type === 'worker' ? 'Worker Service' : 'Cron Job';
+      const newId = `service-staged-${Date.now()}`;
       const newNode: RFNode = {
         id: newId,
-        type: config.nodeType,
+        type: 'service',
         position: {
           x: (serviceNode?.position.x ?? 400) + 280,
           y: (serviceNode?.position.y ?? 200) + 180,
         },
-        data: {
-          label: config.label,
-          environmentId: serviceNode?.data?.environmentId ?? '',
-          databaseEngine: config.engine,
-          isStaged: true,
-        },
+        data: { label: placeholderLabel, environmentId, isStaged: true },
       };
-
       setNodes((nds) => [...nds, newNode]);
-
-      if (serviceNode) {
-        const newEdge: Edge = {
-          id: `edge-${serviceNode.id}-${newId}`,
-          source: serviceNode.id,
-          target: newId,
-          animated: true,
-          style: { stroke: 'hsl(var(--amber-400) / 0.6)', strokeWidth: 2 },
-        };
-        setEdges((eds) => [...eds, newEdge]);
-      }
-
       addChange({
         nodeId: newId,
         type: 'ADD_SERVICE',
-        label: `Add ${config.label}`,
+        label: `Add ${placeholderLabel}`,
         payload: { type, nodeId: newId },
       });
     },
-    [nodes, setNodes, setEdges, addChange],
+    [nodes, setNodes, addChange, createResource],
   );
 
+  // Deploy = apply the whole graph: provision managed resources and redeploy
+  // services with connection env vars injected. If a service has no image yet,
+  // fall back to a fresh build (workflow_dispatch).
   const handleDeploy = useCallback(() => {
-    queryClient.invalidateQueries({ queryKey: ['canvas', projectId] });
-  }, [queryClient, projectId]);
-
-  const activeEnvironmentId = useMemo(() => {
-    const envNode = nodes.find((n) => n.type === 'service');
-    return String(envNode?.data?.environmentId ?? '');
-  }, [nodes]);
+    if (!activeEnvironmentId) return;
+    applyGraph.mutate(activeEnvironmentId, {
+      onSuccess: (result) => {
+        toast({
+          title: 'Deploying…',
+          description: `Provisioning resources and redeploying ${result.deploymentCount} service${
+            result.deploymentCount === 1 ? '' : 's'
+          }.`,
+        });
+      },
+      onError: (error: unknown) => {
+        const message =
+          error && typeof error === 'object' && 'response' in error
+            ? (error as { response?: { data?: { message?: string } } }).response?.data?.message
+            : null;
+        const noImage = (message ?? '').toLowerCase().includes('no deployable image');
+        if (noImage) {
+          toast({
+            title: 'Building first…',
+            description: 'No image yet — kicking a fresh build, then it will deploy.',
+          });
+          triggerBuild.mutate();
+          return;
+        }
+        toast({
+          title: 'Deploy failed',
+          description: message ?? 'Something went wrong applying the graph.',
+          variant: 'destructive',
+        });
+      },
+    });
+  }, [activeEnvironmentId, applyGraph, triggerBuild]);
 
   const selectedNodeData = useMemo(() => {
     if (!selectedNode) return null;
     return canvasData?.nodes.find((n) => n.id === selectedNode.id) ?? null;
   }, [selectedNode, canvasData]);
 
+  // Resource nodes (database/redis/storage) carry real Resource ids and must NOT
+  // open the service-only drawer (its tabs call /services/* with the resource id).
+  const isResourceNode = !!selectedNode && RESOURCE_NODE_TYPES.includes(String(selectedNode.type));
+
+  // Env vars injected into the selected service by inbound connection edges.
+  const autoInjectedVars = useMemo(() => {
+    if (!selectedNode || isResourceNode || !canvasData) return [];
+    const result: Array<{ name: string; source: string }> = [];
+    for (const edge of canvasData.edges) {
+      if (edge.target !== selectedNode.id) continue;
+      const sourceNode = canvasData.nodes.find((n) => n.id === edge.source);
+      const sourceLabel = sourceNode?.data.label ?? 'resource';
+      for (const name of edge.injectedVars ?? []) {
+        result.push({ name, source: sourceLabel });
+      }
+    }
+    return result;
+  }, [selectedNode, isResourceNode, canvasData]);
+
   useEffect(() => {
     if (canvasData) {
-      setNodes(toRFNodes(canvasData.nodes));
+      // Preserve local-only staged placeholders (worker/cron nodes that have no
+      // backend row yet) across the frequent canvas refetches now triggered by
+      // resource/connection mutations — otherwise they'd be wiped while their
+      // entry still shows in the StagedChangesBar.
+      setNodes((prev) => {
+        const staged = prev.filter(
+          (n) => n.data?.isStaged && String(n.id).startsWith('service-staged-'),
+        );
+        return [...toRFNodes(canvasData.nodes), ...staged];
+      });
       setEdges(toRFEdges(canvasData.edges));
     }
   }, [canvasData, setNodes, setEdges]);
@@ -282,7 +453,9 @@ export function ProjectCanvas({ projectId }: ProjectCanvasProps) {
     );
   }
 
-  const hasNodes = nodes.length > 0;
+  // Repository nodes are provenance anchors, not deployable content — a project
+  // with only a repo node (no services/resources) still needs the onboarding state.
+  const hasNodes = nodes.some((n) => n.type !== 'repository');
 
   return (
     <div ref={reactFlowWrapper} className="h-full w-full overflow-hidden bg-background">
@@ -297,6 +470,9 @@ export function ProjectCanvas({ projectId }: ProjectCanvasProps) {
         onActivityToggle={() => setActivityOpen((open) => !open)}
         logsOpen={logsPanelOpen}
         onLogsToggle={() => setLogsPanelOpen((open) => !open)}
+        onDeploy={handleDeploy}
+        deploying={applyGraph.isPending}
+        canDeploy={Boolean(activeEnvironmentId)}
       />
 
       {!hasNodes ? (
@@ -312,9 +488,10 @@ export function ProjectCanvas({ projectId }: ProjectCanvasProps) {
           nodes={nodes}
           edges={edges}
           onNodesChange={handleNodesChange}
-          onEdgesChange={onEdgesChange}
+          onEdgesChange={handleEdgesChange}
           onConnect={onConnect}
           onNodeClick={onNodeClick}
+          onEdgeClick={onEdgeClick}
           onPaneClick={onPaneClick}
           onPaneContextMenu={onPaneContextMenu}
           nodeTypes={nodeTypes}
@@ -337,23 +514,32 @@ export function ProjectCanvas({ projectId }: ProjectCanvasProps) {
         </ReactFlow>
       )}
 
+      {edgePopover && (
+        <EdgeConfigPopover
+          projectId={projectId}
+          connectionId={edgePopover.connectionId}
+          sourceResourceKind={edgePopover.sourceResourceKind}
+          position={edgePopover.position}
+          onClose={() => setEdgePopover(null)}
+        />
+      )}
+
       {activityOpen && (
-        <aside className="liftoff-panel absolute bottom-4 right-4 top-20 z-20 w-[min(460px,calc(100vw-112px))] rounded-lg p-6">
+        <aside className="liftoff-panel absolute bottom-4 right-4 top-20 z-20 w-[min(460px,calc(100vw-112px))] animate-in fade-in slide-in-from-right-4 rounded-lg p-6 duration-300">
           <h2 className="text-xl font-semibold">Activity</h2>
-          <div className="mt-8 rounded-lg border border-border bg-secondary/40 p-5">
-            <div className="flex items-center gap-3">
-              <span className="h-2 w-2 rounded-full bg-primary" />
-              <div>
-                <p className="font-medium">Canvas ready</p>
-                <p className="mt-1 text-sm text-muted-foreground">Use Add to stage services, databases, buckets, or future endpoints.</p>
-              </div>
-            </div>
+          <p className="mt-1 text-xs text-muted-foreground">Recent deployments in this environment.</p>
+          <div className="mt-2 max-h-[calc(100%-4rem)] overflow-y-auto">
+            {activeEnvironmentId ? (
+              <CanvasActivity environmentId={activeEnvironmentId} />
+            ) : (
+              <p className="mt-8 text-sm text-muted-foreground">No environment yet.</p>
+            )}
           </div>
         </aside>
       )}
 
       {logsPanelOpen && activeEnvironmentId && (
-        <aside className="liftoff-panel absolute bottom-4 right-4 top-20 z-20 flex w-[min(720px,calc(100vw-112px))] flex-col overflow-hidden rounded-lg p-5">
+        <aside className="liftoff-panel absolute bottom-4 right-4 top-20 z-20 flex w-[min(720px,calc(100vw-112px))] flex-col overflow-hidden rounded-lg p-5 animate-in fade-in slide-in-from-right-4 duration-300">
           <div className="mb-4 flex items-center justify-between">
             <div>
               <h2 className="text-xl font-semibold">Environment logs</h2>
@@ -383,7 +569,7 @@ export function ProjectCanvas({ projectId }: ProjectCanvasProps) {
           {hasNodes && (
             <>
               <ConfigDrawer
-                open={!!selectedNode}
+                open={!!selectedNode && !isResourceNode}
                 onClose={() => setSelectedNode(null)}
                 nodeLabel={selectedNodeData?.data.label}
                 nodeId={selectedNode?.id}
@@ -391,13 +577,18 @@ export function ProjectCanvas({ projectId }: ProjectCanvasProps) {
                 repoName={String(selectedNode?.data?.repoName ?? selectedNodeData?.data.label ?? '')}
                 region={String(selectedNode?.data?.region ?? selectedNodeData?.data?.region ?? '')}
                 replicas={Number(selectedNode?.data?.replicas ?? 1)}
+                environmentId={String(selectedNode?.data?.environmentId ?? '') || undefined}
               >
-                {selectedNode && (
+                {selectedNode && !isResourceNode && (
                   <>
-                    <DrawerMetricsTab environmentId={String(selectedNode.data?.environmentId ?? '')} />
+                    <DrawerMetricsTab
+                      environmentId={String(selectedNode.data?.environmentId ?? '')}
+                      serviceName={String(selectedNode.data?.serviceName ?? '') || undefined}
+                    />
                     <DrawerVariablesTab
                       serviceId={selectedNode.id}
                       environmentId={String(selectedNode.data?.environmentId ?? '')}
+                      autoInjected={autoInjectedVars}
                     />
                     <DrawerLogsTab
                       environmentId={String(selectedNode.data?.environmentId ?? '')}
@@ -409,12 +600,33 @@ export function ProjectCanvas({ projectId }: ProjectCanvasProps) {
                       environmentId={String(selectedNode.data?.environmentId ?? '')}
                       projectId={projectId}
                       instanceSize={String(selectedNode.data?.instanceSize ?? '')}
+                      command={
+                        selectedNode.data?.command != null ? String(selectedNode.data.command) : null
+                      }
                       domains={[]}
                       onServiceDeleted={() => setSelectedNode(null)}
                     />
                   </>
                 )}
               </ConfigDrawer>
+
+              <ResourceDrawer
+                open={!!selectedNode && isResourceNode}
+                onClose={() => setSelectedNode(null)}
+                projectId={projectId}
+                resourceId={isResourceNode && selectedNode ? selectedNode.id : ''}
+                label={String(selectedNode?.data?.label ?? 'Resource')}
+                kind={selectedNode?.data?.resourceKind as ResourceKind | undefined}
+                status={String(selectedNode?.data?.resourceStatus ?? 'DRAFT')}
+                hostname={selectedNode?.data?.hostname ? String(selectedNode.data.hostname) : undefined}
+                port={selectedNode?.data?.port ? Number(selectedNode.data.port) : undefined}
+                bucketName={
+                  selectedNode?.data?.bucketName ? String(selectedNode.data.bucketName) : undefined
+                }
+                outputs={selectedNode?.data?.outputs as Record<string, string> | undefined}
+                config={selectedNode?.data?.resourceConfig as Record<string, unknown> | undefined}
+                onDeleted={() => setSelectedNode(null)}
+              />
 
               <StagedChangesBar onDeploy={handleDeploy} />
             </>

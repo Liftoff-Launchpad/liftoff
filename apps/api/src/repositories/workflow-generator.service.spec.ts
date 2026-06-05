@@ -54,7 +54,7 @@ describe('WorkflowGeneratorService', () => {
     expect(workflow).toContain('SERVICE_NAME: ${{ matrix.service.name }}');
     expect(workflow).toContain('https://liftoff.example.com/api/v1/webhooks/deploy-complete');
     expect(workflow).toContain('secrets.LIFTOFF_DEPLOY_SECRET');
-    expect(workflow).toContain('\\"serviceName\\":\\"$SERVICE_NAME\\"');
+    expect(workflow).toContain('"serviceName":"$SERVICE_NAME"');
     // No BUILD vars passed → no LIFTOFF_BUILD_* env mappings
     expect(workflow).not.toContain('secrets.LIFTOFF_BUILD_');
   });

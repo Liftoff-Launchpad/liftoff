@@ -2,7 +2,10 @@ import { HttpModule } from '@nestjs/axios';
 import { Module } from '@nestjs/common';
 import { ProjectsModule } from '../projects/projects.module';
 import { GitHubService } from './github.service';
-import { RepositoriesController } from './repositories.controller';
+import {
+  ProjectRepositoriesController,
+  RepositoriesController,
+} from './repositories.controller';
 import { RepositoriesService } from './repositories.service';
 import { WorkflowGeneratorService } from './workflow-generator.service';
 
@@ -16,7 +19,7 @@ import { WorkflowGeneratorService } from './workflow-generator.service';
  */
 @Module({
   imports: [HttpModule, ProjectsModule],
-  controllers: [RepositoriesController],
+  controllers: [RepositoriesController, ProjectRepositoriesController],
   providers: [GitHubService, WorkflowGeneratorService, RepositoriesService],
   exports: [GitHubService, RepositoriesService],
 })

@@ -1,11 +1,10 @@
+import { DeploymentStatus, type Connection, type Environment, type Resource } from '@prisma/client';
 import {
-  DeploymentStatus,
-  type Deployment,
-  type Environment,
-  type Service,
-  type ServiceType,
-} from '@prisma/client';
-import { ErrorCodes } from '@liftoff/shared';
+  ErrorCodes,
+  type InjectConfig,
+  resolveResourceBindingVars,
+  resourceKindToSpec,
+} from '@liftoff/shared';
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { ProjectsService } from '../projects/projects.service';
@@ -19,18 +18,27 @@ import { Role } from '@prisma/client';
 
 export interface CanvasNode {
   id: string;
-  type: 'service' | 'database' | 'redis' | 'storage';
+  type: 'service' | 'database' | 'redis' | 'storage' | 'repository';
   position: { x: number; y: number };
   data: {
     label: string;
     environmentId: string;
+    // Repository-node fields (Phase F): one node per connected repo.
+    repoFullName?: string;
+    repoBranch?: string;
+    webhookStatus?: 'active' | 'missing';
+    isPrimary?: boolean;
     // Set on `service`-type nodes (Phase 1+). DB/redis/storage child nodes leave this empty.
     serviceId?: string;
     serviceKind?: 'SERVICE' | 'WORKER' | 'JOB' | 'STATIC_SITE';
     serviceName?: string;
+    // Phase F: which connected repo this service builds from (multi-repo provenance).
+    repositoryId?: string | null;
+    repoName?: string;
     sourceDir?: string;
     routePath?: string | null;
     healthcheckPath?: string | null;
+    command?: string | null;
     endpoint?: string;
     imageUri?: string;
     buildStrategy?: string;
@@ -45,6 +53,12 @@ export interface CanvasNode {
     bucketName?: string;
     outputs?: Record<string, string>;
     lastDeployTime?: string;
+    // Resource-node fields (database/redis/storage nodes backed by Resource rows).
+    resourceId?: string;
+    resourceKind?: string;
+    resourceStatus?: string;
+    resourceConfig?: Record<string, unknown>;
+    isStaged?: boolean;
   };
 }
 
@@ -52,6 +66,16 @@ export interface CanvasEdge {
   id: string;
   source: string;
   target: string;
+  /** Env vars this edge auto-injects into the target service on deploy. */
+  injectedVars?: string[];
+  /** Short edge label, e.g. "DATABASE_URL" or "DATABASE_URL +2". */
+  label?: string;
+  /**
+   * 'binding' (default) = a persisted Connection row (resource/service → service,
+   * deletable). 'repo' = a derived repository → service provenance edge (Phase F,
+   * not a Connection; the UI renders it dashed and non-deletable).
+   */
+  kind?: 'binding' | 'repo';
 }
 
 export interface CanvasState {
@@ -68,34 +92,14 @@ export interface AutoSetupResult {
   deploymentId: string;
 }
 
-type EnvironmentWithServices = {
-  id: string;
-  name: string;
-  gitBranch: string;
-  doAccountId: string;
-  doAccount: { region: string };
-  services: Array<
-    Service & {
-      deployments: Array<Pick<
-        Deployment,
-        'id' | 'status' | 'imageUri' | 'buildStrategy' | 'endpoint' | 'updatedAt' | 'createdAt'
-      >>;
-    }
-  >;
-  pulumiStack: {
-    outputs: Record<string, string> | null;
-  } | null;
-};
-
-// Layout grid: services arranged horizontally; child resources (DB/Redis/Spaces)
-// hang off the first service of each env.
+// Layout grid: services arranged horizontally; resource nodes without a saved
+// position fall back to a slot below the first service of each env.
 const SERVICE_BASE = { x: 400, y: 200 };
 const SERVICE_X_STEP = 320;
-const CHILD_RESOURCE_OFFSETS = {
-  database: { dx: 280, dy: 180 },
-  redis: { dx: 280, dy: 320 },
-  storage: { dx: 280, dy: 460 },
-} as const;
+const RESOURCE_FALLBACK_OFFSET = { dx: 320, dy: 200, dyStep: 140 } as const;
+// Repository nodes (Phase F) sit in a fixed column to the left of services.
+const REPO_COLUMN_X = -40;
+const REPO_ROW_STEP = 170;
 
 function isCanvasPosition(value: unknown): value is { x: number; y: number } {
   return (
@@ -122,8 +126,10 @@ export class CanvasService {
   /**
    * Returns the enriched canvas state (nodes + edges + live status) for a project.
    *
-   * Each Service row becomes one `service`-type node; per-env Pulumi outputs
-   * (Managed Postgres, Spaces bucket, etc.) hang off the FIRST service of their env.
+   * Nodes come from real rows: one `service` node per Service, one resource node
+   * (database/redis/storage) per Resource. Edges come from Connection rows — the
+   * persisted graph, not derived from Pulumi outputs. Live deploy status is layered
+   * onto service nodes from their latest deployment.
    */
   public async getCanvas(projectId: string, userId: string): Promise<CanvasState> {
     await this.projectsService.assertProjectRole(projectId, userId);
@@ -133,15 +139,15 @@ export class CanvasService {
       select: {
         id: true,
         name: true,
-        repository: { select: { id: true } },
+        repositories: {
+          select: { id: true, fullName: true, branch: true, webhookId: true },
+          orderBy: { createdAt: 'asc' },
+        },
         environments: {
           where: { deletedAt: null },
           orderBy: { createdAt: 'asc' },
           select: {
             id: true,
-            name: true,
-            gitBranch: true,
-            doAccountId: true,
             doAccount: { select: { region: true } },
             services: {
               where: { deletedAt: null },
@@ -162,7 +168,11 @@ export class CanvasService {
                 },
               },
             },
-            pulumiStack: { select: { outputs: true } },
+            resourceNodes: {
+              where: { deletedAt: null },
+              orderBy: { createdAt: 'asc' },
+            },
+            connections: true,
           },
         },
       },
@@ -174,26 +184,50 @@ export class CanvasService {
 
     const nodes: CanvasNode[] = [];
     const edges: CanvasEdge[] = [];
+    // Phase F: map repo id → "owner/name" so service nodes show their provenance.
+    const repoNameById = new Map(project.repositories.map((repo) => [repo.id, repo.fullName]));
+    const repoIds = new Set(project.repositories.map((repo) => repo.id));
+
+    // Phase F: one repository node per connected repo, in a column to the left of
+    // the services. Edges from a repo to each service it builds are added in the
+    // service loop below. These are derived (not Connection rows) — fixed-position
+    // and non-deletable on the canvas.
+    project.repositories.forEach((repo, index) => {
+      nodes.push({
+        id: repo.id,
+        type: 'repository',
+        position: { x: REPO_COLUMN_X, y: SERVICE_BASE.y + index * REPO_ROW_STEP },
+        data: {
+          label: repo.fullName.split('/').pop() ?? repo.fullName,
+          environmentId: '',
+          repoFullName: repo.fullName,
+          repoBranch: repo.branch,
+          webhookStatus: repo.webhookId ? 'active' : 'missing',
+          isPrimary: index === 0,
+        },
+      });
+    });
 
     for (const env of project.environments) {
-      const envWithData = env as unknown as EnvironmentWithServices;
-      // Compute first-service anchor up-front (used to position env-scoped child resources
-      // like the Pulumi-provisioned Postgres/Spaces). Computing inside the loop and via a
-      // closure trips TypeScript's narrowing across function boundaries.
-      const firstService = envWithData.services[0] ?? null;
-      const firstServiceId: string | null = firstService?.id ?? null;
-      const firstServicePosition: { x: number; y: number } | null = firstService
-        ? isCanvasPosition(firstService.canvasPosition)
+      const region = env.doAccount.region;
+      // Track which node ids actually render this pass. Services are SOFT-deleted
+      // (their Connection rows survive the FK cascade), so we must drop any edge
+      // whose source/target node isn't live — otherwise getCanvas emits dangling
+      // edges pointing at a node that no longer renders.
+      const liveNodeIds = new Set<string>();
+      const firstService = env.services[0] ?? null;
+      const firstServicePosition: { x: number; y: number } =
+        firstService && isCanvasPosition(firstService.canvasPosition)
           ? firstService.canvasPosition
-          : { x: SERVICE_BASE.x, y: SERVICE_BASE.y }
-        : null;
+          : { x: SERVICE_BASE.x, y: SERVICE_BASE.y };
 
-      envWithData.services.forEach((service, index) => {
+      env.services.forEach((service, index) => {
         const latestDeployment = service.deployments[0];
         const position = isCanvasPosition(service.canvasPosition)
           ? service.canvasPosition
           : { x: SERVICE_BASE.x + index * SERVICE_X_STEP, y: SERVICE_BASE.y };
 
+        liveNodeIds.add(service.id);
         nodes.push({
           id: service.id,
           type: 'service',
@@ -204,14 +238,19 @@ export class CanvasService {
             serviceId: service.id,
             serviceKind: service.kind,
             serviceName: service.name,
+            repositoryId: service.repositoryId,
+            repoName: service.repositoryId
+              ? repoNameById.get(service.repositoryId)
+              : undefined,
             sourceDir: service.sourceDir,
             routePath: service.routePath,
             healthcheckPath: service.healthcheckPath,
+            command: service.command,
             endpoint: latestDeployment?.endpoint ?? undefined,
             imageUri: latestDeployment?.imageUri ?? undefined,
             buildStrategy: latestDeployment?.buildStrategy ?? service.buildStrategy.toLowerCase(),
             runtimeSummary: `${service.instanceSize} • port ${service.port}`,
-            region: envWithData.doAccount.region,
+            region,
             instanceSize: service.instanceSize,
             replicas: service.replicas,
             port: service.port,
@@ -219,84 +258,153 @@ export class CanvasService {
             lastDeployTime: latestDeployment?.updatedAt?.toISOString(),
           },
         });
+
+        // Phase F: provenance edge from the owning repo node to this service.
+        if (service.repositoryId && repoIds.has(service.repositoryId)) {
+          edges.push({
+            id: `repo:${service.repositoryId}:${service.id}`,
+            source: service.repositoryId,
+            target: service.id,
+            kind: 'repo',
+          });
+        }
       });
 
-      // Pulumi-provisioned env resources (postgres, redis, spaces) hang off the first service.
-      const pulumiOutputs = envWithData.pulumiStack?.outputs ?? null;
-      if (pulumiOutputs && firstServiceId !== null && firstServicePosition !== null) {
-        const anchor = firstServicePosition;
-        const outputs = pulumiOutputs as Record<string, string>;
+      // Resource nodes (managed Postgres / Redis / Spaces bucket) from Resource rows.
+      env.resourceNodes.forEach((resource, index) => {
+        const position = isCanvasPosition(resource.canvasPosition)
+          ? resource.canvasPosition
+          : {
+              x: firstServicePosition.x + RESOURCE_FALLBACK_OFFSET.dx,
+              y: firstServicePosition.y + RESOURCE_FALLBACK_OFFSET.dy + index * RESOURCE_FALLBACK_OFFSET.dyStep,
+            };
+        liveNodeIds.add(resource.id);
+        nodes.push(this.toResourceNode(resource, env.id, position));
+      });
 
-        if (outputs.dbUri || outputs.databaseHost) {
-          const dbNodeId = `db-${env.id}`;
-          nodes.push({
-            id: dbNodeId,
-            type: 'database',
-            position: {
-              x: anchor.x + CHILD_RESOURCE_OFFSETS.database.dx,
-              y: anchor.y + CHILD_RESOURCE_OFFSETS.database.dy,
-            },
-            data: {
-              label: 'PostgreSQL',
-              environmentId: env.id,
-              databaseEngine: 'postgres',
-              hostname: outputs.databaseHost ?? outputs.dbHost,
-              port: outputs.databasePort ? parseInt(String(outputs.databasePort), 10) : 5432,
-              outputs,
-            },
-          });
-          edges.push({ id: `edge-${env.id}-db`, source: firstServiceId, target: dbNodeId });
+      // Edges from Connection rows. Source = resource (binding) or service (link);
+      // target is always the consumer service. Skip any edge whose endpoints aren't
+      // both live nodes (e.g. a connection left behind by a soft-deleted service).
+      const resourceById = new Map(env.resourceNodes.map((resource) => [resource.id, resource]));
+      const serviceNameById = new Map(env.services.map((service) => [service.id, service.name]));
+      for (const connection of env.connections) {
+        const source = connection.sourceResourceId ?? connection.sourceServiceId;
+        if (!source) {
+          continue;
         }
-
-        if (outputs.redisUri || outputs.redisHost) {
-          const redisNodeId = `redis-${env.id}`;
-          nodes.push({
-            id: redisNodeId,
-            type: 'redis',
-            position: {
-              x: anchor.x + CHILD_RESOURCE_OFFSETS.redis.dx,
-              y: anchor.y + CHILD_RESOURCE_OFFSETS.redis.dy,
-            },
-            data: {
-              label: 'Redis',
-              environmentId: env.id,
-              databaseEngine: 'redis',
-              hostname: outputs.redisHost,
-              port: outputs.redisPort ? parseInt(String(outputs.redisPort), 10) : 6379,
-              outputs,
-            },
-          });
-          edges.push({ id: `edge-${env.id}-redis`, source: firstServiceId, target: redisNodeId });
+        if (!liveNodeIds.has(source) || !liveNodeIds.has(connection.targetServiceId)) {
+          continue;
         }
-
-        if (outputs.bucketName || outputs.spacesBucket) {
-          const storageNodeId = `storage-${env.id}`;
-          nodes.push({
-            id: storageNodeId,
-            type: 'storage',
-            position: {
-              x: anchor.x + CHILD_RESOURCE_OFFSETS.storage.dx,
-              y: anchor.y + CHILD_RESOURCE_OFFSETS.storage.dy,
-            },
-            data: {
-              label: 'Spaces Bucket',
-              environmentId: env.id,
-              bucketName: outputs.bucketName ?? outputs.spacesBucket,
-              outputs,
-            },
-          });
-          edges.push({ id: `edge-${env.id}-storage`, source: firstServiceId, target: storageNodeId });
-        }
+        const injectedVars = this.computeInjectedVars(connection, resourceById, serviceNameById);
+        edges.push({
+          id: connection.id,
+          source,
+          target: connection.targetServiceId,
+          injectedVars,
+          label: this.edgeLabel(injectedVars),
+        });
       }
     }
 
     return {
       projectId: project.id,
       projectName: project.name,
-      hasConnectedRepo: !!project.repository,
+      hasConnectedRepo: project.repositories.length > 0,
       nodes,
       edges,
     };
+  }
+
+  /**
+   * Maps a Resource row to its canvas node, dispatching node type + display data
+   * by kind. Only non-secret cached outputs are surfaced.
+   */
+  private toResourceNode(
+    resource: Resource,
+    environmentId: string,
+    position: { x: number; y: number },
+  ): CanvasNode {
+    const outputs = (resource.outputs ?? undefined) as Record<string, string> | undefined;
+    const base = {
+      label: resource.name,
+      environmentId,
+      resourceId: resource.id,
+      resourceKind: resource.kind,
+      resourceStatus: resource.status,
+      resourceConfig: (resource.config ?? undefined) as Record<string, unknown> | undefined,
+      outputs,
+    };
+
+    if (resource.kind === 'REDIS') {
+      return {
+        id: resource.id,
+        type: 'redis',
+        position,
+        data: { ...base, databaseEngine: 'redis', hostname: outputs?.host, port: 6379 },
+      };
+    }
+
+    if (resource.kind === 'SPACES_BUCKET') {
+      return {
+        id: resource.id,
+        type: 'storage',
+        position,
+        data: { ...base, bucketName: outputs?.bucketName },
+      };
+    }
+
+    return {
+      id: resource.id,
+      type: 'database',
+      position,
+      data: {
+        ...base,
+        databaseEngine: 'postgres',
+        hostname: outputs?.host ?? outputs?.clusterName,
+        port: 5432,
+      },
+    };
+  }
+
+  /**
+   * Names the env vars an edge auto-injects into its target service on deploy —
+   * resolved via the same binding templates the Pulumi compiler uses, so the
+   * canvas shows exactly what will be injected.
+   */
+  private computeInjectedVars(
+    connection: Connection,
+    resourceById: Map<string, Resource>,
+    serviceNameById: Map<string, string>,
+  ): string[] {
+    if (connection.kind === 'RESOURCE_BINDING' && connection.sourceResourceId) {
+      const resource = resourceById.get(connection.sourceResourceId);
+      if (!resource) {
+        return [];
+      }
+      const { vars } = resolveResourceBindingVars(
+        resourceKindToSpec(resource.kind),
+        connection.injectConfig as InjectConfig | null,
+      );
+      return Object.keys(vars);
+    }
+
+    if (connection.kind === 'SERVICE_LINK' && connection.sourceServiceId) {
+      const sourceName = serviceNameById.get(connection.sourceServiceId);
+      if (!sourceName) {
+        return [];
+      }
+      return [`INTERNAL_${sourceName.toUpperCase().replace(/[^A-Z0-9]/g, '_')}_URL`];
+    }
+
+    return [];
+  }
+
+  private edgeLabel(injectedVars: string[]): string | undefined {
+    if (injectedVars.length === 0) {
+      return undefined;
+    }
+    const [first, ...rest] = injectedVars;
+    return rest.length > 0 ? `${first} +${rest.length}` : first;
   }
 
   /**
@@ -344,35 +452,37 @@ export class CanvasService {
   }
 
   /**
-   * Persists canvas node positions for the project's Service rows.
+   * Persists canvas node positions for both Service and Resource nodes.
    *
-   * Child resource nodes (DB/Redis/Spaces with `db-`/`redis-`/`storage-` prefixes)
-   * are derived from Pulumi outputs; their positions are computed from the first
-   * service's position and not stored independently.
+   * A node id is either a Service id or a Resource id (both real cuids now that
+   * resources are first-class rows). We pre-resolve which ids are resources for
+   * this project, then route each position to the right table. All updates are
+   * scoped to non-deleted envs on this project so a spoofed/cross-project node id
+   * can never write outside the caller's project.
    */
   public async saveLayout(projectId: string, userId: string, dto: SaveLayoutDto): Promise<void> {
     await this.projectsService.assertProjectRole(projectId, userId);
 
+    const projectResources = await this.prismaService.resource.findMany({
+      where: { environment: { projectId, deletedAt: null }, deletedAt: null },
+      select: { id: true },
+    });
+    const resourceIds = new Set(projectResources.map((resource) => resource.id));
+
     for (const nodePos of dto.nodes) {
-      if (
-        nodePos.id.startsWith('db-') ||
-        nodePos.id.startsWith('redis-') ||
-        nodePos.id.startsWith('storage-')
-      ) {
+      const canvasPosition = { x: nodePos.x, y: nodePos.y };
+
+      if (resourceIds.has(nodePos.id)) {
+        await this.prismaService.resource.updateMany({
+          where: { id: nodePos.id, environment: { projectId, deletedAt: null } },
+          data: { canvasPosition },
+        });
         continue;
       }
 
-      // Service rows are env-scoped, env is project-scoped — restrict the update
-      // to services belonging to a non-deleted env on this project so cross-project
-      // writes are impossible even if a node id is spoofed client-side.
       await this.prismaService.service.updateMany({
-        where: {
-          id: nodePos.id,
-          environment: { projectId, deletedAt: null },
-        },
-        data: {
-          canvasPosition: { x: nodePos.x, y: nodePos.y },
-        },
+        where: { id: nodePos.id, environment: { projectId, deletedAt: null } },
+        data: { canvasPosition },
       });
     }
   }

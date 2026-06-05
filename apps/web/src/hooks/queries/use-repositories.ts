@@ -76,7 +76,25 @@ export function useConnectedRepo(projectId: string) {
 }
 
 /**
- * Connects a repository to a project.
+ * Lists every repository linked to the project (Phase F multi-repo), oldest
+ * (primary) first. Use this when a project can have more than one repo.
+ */
+export function useConnectedRepos(projectId: string) {
+  return useQuery({
+    queryKey: [...repositoryBaseQueryKey, projectId, 'list'],
+    enabled: Boolean(projectId),
+    queryFn: async () => {
+      const response = await apiClient.get<ConnectedRepository[]>(
+        `/projects/${projectId}/repositories`,
+      );
+      return response.data;
+    },
+  });
+}
+
+/**
+ * Connects a repository to a project. With Phase F, a project may link several
+ * repos — calling this again adds another rather than being rejected.
  */
 export function useConnectRepo(projectId: string) {
   const queryClient = useQueryClient();
@@ -84,7 +102,7 @@ export function useConnectRepo(projectId: string) {
   return useMutation({
     mutationFn: async (payload: ConnectRepositoryInput) => {
       const response = await apiClient.post<ConnectedRepository>(
-        `/projects/${projectId}/repository`,
+        `/projects/${projectId}/repositories`,
         payload,
       );
       return response.data;
@@ -92,7 +110,9 @@ export function useConnectRepo(projectId: string) {
     onSuccess: async () => {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: [...repositoryBaseQueryKey, projectId, 'connected'] }),
+        queryClient.invalidateQueries({ queryKey: [...repositoryBaseQueryKey, projectId, 'list'] }),
         queryClient.invalidateQueries({ queryKey: [...repositoryBaseQueryKey, projectId, 'available'] }),
+        queryClient.invalidateQueries({ queryKey: ['canvas', projectId] }),
       ]);
     },
   });
@@ -114,7 +134,7 @@ export interface EnvExampleScanResult {
  */
 export function useScanEnvExample(projectId: string) {
   return useMutation({
-    mutationFn: async (payload: { branch: string; sourceDir?: string }) => {
+    mutationFn: async (payload: { branch: string; sourceDir?: string; repositoryId?: string }) => {
       const response = await apiClient.post<EnvExampleScanResult>(
         `/projects/${projectId}/repository/scan-env-example`,
         payload,
@@ -125,7 +145,7 @@ export function useScanEnvExample(projectId: string) {
 }
 
 /**
- * Disconnects a connected repository from a project.
+ * Disconnects the project's primary repository (single-repo back-compat).
  */
 export function useDisconnectRepo(projectId: string) {
   const queryClient = useQueryClient();
@@ -137,7 +157,29 @@ export function useDisconnectRepo(projectId: string) {
     onSuccess: async () => {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: [...repositoryBaseQueryKey, projectId, 'connected'] }),
+        queryClient.invalidateQueries({ queryKey: [...repositoryBaseQueryKey, projectId, 'list'] }),
         queryClient.invalidateQueries({ queryKey: [...repositoryBaseQueryKey, projectId, 'available'] }),
+      ]);
+    },
+  });
+}
+
+/**
+ * Disconnects one specific repository by id (Phase F multi-repo).
+ */
+export function useDisconnectRepoById(projectId: string) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (repositoryId: string) => {
+      await apiClient.delete(`/projects/${projectId}/repositories/${repositoryId}`);
+    },
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: [...repositoryBaseQueryKey, projectId, 'connected'] }),
+        queryClient.invalidateQueries({ queryKey: [...repositoryBaseQueryKey, projectId, 'list'] }),
+        queryClient.invalidateQueries({ queryKey: [...repositoryBaseQueryKey, projectId, 'available'] }),
+        queryClient.invalidateQueries({ queryKey: ['canvas', projectId] }),
       ]);
     },
   });

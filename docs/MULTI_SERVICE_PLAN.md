@@ -1,5 +1,13 @@
 # Plan: Multi-Service, Multi-Repo, and Vault Support
 
+> **⚠️ Superseded for unshipped work.** Phases **1 (multi-service)** and **2 (vault)**
+> below are **shipped** — this doc remains their record of decisions and what landed.
+> The remaining work (old Phases 3 metrics, 4 multi-repo, 5 smart defaults) is
+> **reframed and folded into [`INTERACTIVE_GRAPH_PLAN.md`](./INTERACTIVE_GRAPH_PLAN.md)**
+> as Phases E / F / D, centered on a first-class interactive graph model
+> (Resource + Connection nodes/edges with auto-injected connection vars). Use the
+> graph plan as the source of truth for anything not yet built.
+
 > **What this proposes:** evolve Liftoff from "1 env = 1 repo = 1 service" to "1 project = N repos = M services per env, with persistent encrypted env vars and per-service metrics." Phased so the existing single-service flow keeps working end-to-end at every step.
 
 ---

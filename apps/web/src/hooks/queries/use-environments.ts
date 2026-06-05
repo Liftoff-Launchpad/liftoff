@@ -269,6 +269,33 @@ export function useRedeployEnvironment(projectId: string, environmentId: string)
 }
 
 /**
+ * Applies the interactive graph for an environment — provisions managed resources
+ * (DB / Redis / bucket), reconciles removed ones, and redeploys services with
+ * connection env vars auto-injected. Reuses each service's last SUCCESS image
+ * (no rebuild). Throws 400 if a service has never deployed (use build instead).
+ *
+ * This is the canvas "Deploy" action.
+ */
+export function useApplyGraph(projectId: string) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (environmentId: string) => {
+      const response = await apiClient.post<{ bundleId: string; deploymentCount: number }>(
+        `/environments/${environmentId}/infrastructure/apply`,
+      );
+      return response.data;
+    },
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['deployments'] }),
+        queryClient.invalidateQueries({ queryKey: ['canvas', projectId] }),
+      ]);
+    },
+  });
+}
+
+/**
  * Validates environment config without persisting changes.
  */
 export function useValidateConfig(projectId: string) {

@@ -50,6 +50,10 @@ describe('EnvironmentsService', () => {
     project: {
       findFirst: jest.fn(),
     },
+    repository: {
+      findUnique: jest.fn(),
+      findFirst: jest.fn(),
+    },
   };
 
   const projectsServiceMock = {
@@ -88,7 +92,7 @@ describe('EnvironmentsService', () => {
       doToken: 'encrypted-do-token',
     });
     prismaServiceMock.project.findFirst.mockResolvedValue({
-      repository: null,
+      repositories: [],
       user: {
         githubToken: null,
       },
@@ -117,6 +121,10 @@ describe('EnvironmentsService', () => {
       '  replicas: 1',
       'healthcheck:',
       '  path: /',
+      'build:',
+      '  strategy: auto',
+      '  dockerfile_path: Dockerfile',
+      '  context: .',
     ].join('\n');
 
     expect(result.id).toBe('env-1');
@@ -142,20 +150,24 @@ describe('EnvironmentsService', () => {
       Role.OWNER,
       Role.ADMIN,
     ]);
-    expect(prismaServiceMock.environment.create).toHaveBeenCalledWith({
-      data: {
-        projectId: 'project-1',
-        doAccountId: 'do-1',
-        name: 'production',
-        gitBranch: 'main',
-        liftoffDeploySecret: expect.stringMatching(/^encrypted:[0-9a-f]{20}$/),
-        serviceType: ServiceType.APP,
-        configYaml: expect.any(String),
-        configParsed: expect.objectContaining({
-          version: '1.0',
+    expect(prismaServiceMock.environment.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          projectId: 'project-1',
+          doAccountId: 'do-1',
+          name: 'production',
+          gitBranch: 'main',
+          liftoffDeploySecret: expect.stringMatching(/^encrypted:[0-9a-f]{20}$/),
+          serviceType: ServiceType.APP,
+          configYaml: expect.any(String),
+          configParsed: expect.objectContaining({
+            version: '1.0',
+          }),
+          // The create now also seeds a default Service row (multi-service Phase 1).
+          services: expect.anything(),
         }),
-      },
-    });
+      }),
+    );
     expect(githubServiceMock.upsertActionsSecret).not.toHaveBeenCalled();
   });
 
@@ -172,9 +184,7 @@ describe('EnvironmentsService', () => {
       doToken: 'encrypted-do-token',
     });
     prismaServiceMock.project.findFirst.mockResolvedValue({
-      repository: {
-        fullName: 'liftoff/my-app',
-      },
+      repositories: [{ fullName: 'liftoff/my-app' }],
       user: {
         githubToken: 'encrypted-github-token',
       },
@@ -217,9 +227,7 @@ describe('EnvironmentsService', () => {
       doToken: 'encrypted-do-token',
     });
     prismaServiceMock.project.findFirst.mockResolvedValue({
-      repository: {
-        fullName: 'liftoff/my-app',
-      },
+      repositories: [{ fullName: 'liftoff/my-app' }],
       user: {
         githubToken: 'encrypted-github-token',
       },
