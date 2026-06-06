@@ -146,6 +146,12 @@ export class AppPlatformApp extends pulumi.ComponentResource {
     const serviceEntries = serviceSpecs.map((service) =>
       this.toServiceSpec(service, args.projectName, args.environmentName),
     );
+    // Build app-level ingress rules from the HTTP services' routes. App Platform
+    // treats legacy component-level `routes[]` and the modern top-level
+    // `spec.ingress.rules[]` as mutually exclusive, so we emit ONLY ingress here
+    // (component routes are dropped in toServiceSpec). Workers/jobs are excluded
+    // by construction — serviceSpecs contains only HTTP components.
+    const ingressRules = this.buildIngressRules(serviceSpecs, args.environmentName);
     const workerEntries = workerSpecs.map((service) =>
       this.toWorkerSpec(service, args.projectName, args.environmentName),
     );
@@ -160,6 +166,7 @@ export class AppPlatformApp extends pulumi.ComponentResource {
           name: appName,
           region: args.region,
           ...(serviceEntries.length > 0 ? { services: serviceEntries } : {}),
+          ...(ingressRules.length > 0 ? { ingress: { rules: ingressRules } } : {}),
           ...(workerEntries.length > 0 ? { workers: workerEntries } : {}),
           ...(jobEntries.length > 0 ? { jobs: jobEntries } : {}),
           ...(args.databases && args.databases.length > 0
@@ -200,13 +207,7 @@ export class AppPlatformApp extends pulumi.ComponentResource {
     environmentName: string,
   ): digitalocean.types.input.AppSpecService {
     const parsedImage = this.parseDocrImageUri(service.imageUri);
-    // Service-component name on App Platform must be ≤32 chars; include the
-    // Liftoff service name (already kebab) plus an env disambiguator so the
-    // same service name across envs doesn't collide.
-    const componentName = truncateKebabCase(
-      toKebabCase(`${service.name}-${environmentName}`),
-      32,
-    );
+    const componentName = this.componentName(service, environmentName);
 
     return {
       name: componentName,
@@ -223,7 +224,9 @@ export class AppPlatformApp extends pulumi.ComponentResource {
       ...(service.healthCheckPath
         ? { healthCheck: { httpPath: service.healthCheckPath } }
         : {}),
-      ...(service.routes.length > 0 ? { routes: service.routes } : {}),
+      // Routing is emitted at the app level via `spec.ingress.rules[]` (see
+      // buildIngressRules). Component-level `routes[]` are deprecated by DO and
+      // mutually exclusive with ingress, so they are intentionally NOT set here.
       envs: this.buildServiceEnvs(
         service.variables,
         service.bindings ?? [],
@@ -231,6 +234,52 @@ export class AppPlatformApp extends pulumi.ComponentResource {
         environmentName,
       ),
     };
+  }
+
+  /**
+   * Builds app-level `spec.ingress.rules[]` from the HTTP services' route paths.
+   * Each route path becomes one rule routing that prefix to the owning component
+   * by name. DO evaluates rules top-to-bottom (first prefix match wins), so rules
+   * are sorted most-specific-first — longer prefixes before shorter ones — which
+   * puts the catch-all `/` last. Only HTTP services are passed in here, so
+   * workers/jobs never receive ingress routing.
+   */
+  private buildIngressRules(
+    serviceSpecs: AppPlatformServiceSpec[],
+    environmentName: string,
+  ): digitalocean.types.input.AppSpecIngressRule[] {
+    const rules: digitalocean.types.input.AppSpecIngressRule[] = [];
+    for (const service of serviceSpecs) {
+      const name = this.componentName(service, environmentName);
+      for (const route of service.routes) {
+        rules.push({
+          match: { path: { prefix: route.path } },
+          component: { name },
+        });
+      }
+    }
+    // Most-specific (longest prefix) first so a catch-all `/` is matched last.
+    return rules.sort(
+      (a, b) =>
+        (b.match as { path: { prefix: string } }).path.prefix.length -
+        (a.match as { path: { prefix: string } }).path.prefix.length,
+    );
+  }
+
+  /**
+   * Component name as it appears in the App spec: the Liftoff service name (already
+   * kebab) plus an env disambiguator, kebab-cased and truncated to App Platform's
+   * 32-char component-name cap. Shared by every component mapper and the ingress
+   * builder so ingress rules reference the exact names emitted on the components.
+   */
+  private componentName(
+    service: AppPlatformServiceSpec,
+    environmentName: string,
+  ): string {
+    return truncateKebabCase(
+      toKebabCase(`${service.name}-${environmentName}`),
+      32,
+    );
   }
 
   /**
